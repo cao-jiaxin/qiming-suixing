@@ -1,0 +1,3233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- 刻意不禁用缩放。常见的 width=device-width,maximum-scale=1,user-scalable=no
+     是把"界面不被放大"的诉求凌驾于用户之上：低视力用户放大页面是刚需
+     （WCAG 1.4.4 要求可放大到 200%，GB/T 37668-2019 也把「可操作性」列为四大目标之一）。
+     双击缩放会带来的误触，改由按钮上的 touch-action:manipulation 单独处理，
+     代价小得多。 -->
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- 与启动闸门同色（夜空靛蓝）：手机浏览器顶部会用它染色，
+     和闸门连成一片，像是"应用正在打开"而不是"网页在加载"。 -->
+<meta name="theme-color" content="#101820">
+<title>启明随行 · 视障场景理解与代办助手</title>
+<!-- 分享到微信/大赛平台时，别人看到的是这几行。没有它们，
+     链接就是光秃秃一条 —— 对一个"要把地址发给评委"的作品来说，
+     这是最廉价也最直接的失分点。 -->
+<meta name="description" content="拍一张照片，就把前方有什么、障碍在几点钟方向约几步、下一步怎么做，用中文语音说给你听。面向视障人士的多模态环境理解与场景代办助手。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="启明随行 · 视障场景理解与代办助手">
+<meta property="og:description" content="拍照即播报：时钟方位 + 步数距离 + 下一步动作，全程语音交互。">
+<meta property="og:locale" content="zh_CN">
+<meta name="twitter:card" content="summary">
+<!-- 图标用内联 SVG 而不是外部文件：本项目"零外部请求、单文件可部署"是一条
+     有意的约束（弱网与离线场景都成立），为了一个 favicon 去破坏它不值得。
+     颜色就是全站主色盲道黄 —— 标签页上也能看出是哪个应用。
+     刻意不做 manifest.json / apple-touch-icon：那会新增两个文件，
+     换来的是"安装成 PWA 全屏运行"，而本应用的使用场景是"拍一张看一眼"，
+     为此改动部署结构不划算。 -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%23F2C230'/><circle cx='32' cy='25' r='9' fill='%23151A1E'/><path d='M15 53c0-9 8-16 17-16s17 7 17 16' fill='%23151A1E'/></svg>">
+<style>
+  /* ==========================================================================
+     设计令牌（token）
+     改配色只改这里。全部 26 组配对色的对比度由 code/contrast_audit.py 实测——
+     改完请跑一次：python code/contrast_audit.py，有不达标项会以非 0 退出码结束。
+
+     为什么底色不是"暖奶油"：#F7F6F3 这类暖底会把低饱和前景色显灰，
+     实测把同一组文字色的对比度压掉约 8%。冷灰白既提对比度，
+     也避开了"暖底+土色"这个 AI 生成页最常见的脸。
+     ========================================================================== */
+  :root{
+    /* 底栏的**实测**高度（由 JS 写进来，见 syncDockH）。
+       它同时决定两件事：页面底部要留多少白、跟屏区最多能长多高。
+       写成变量而不是在两处各写一个数字 —— 底栏加一行或字号一变，
+       两处就会各自跑偏，而没人会记得同时改两个地方。
+       150px 是兜底值：JS 万一没跑，页面也不会被底栏压住。 */
+    --dock-h:150px;
+    --bg:#F2F4F3; --card:#FFFFFF; --line:#D5DCDD;
+    --tx:#10161C; --tx2:#3F4A53; --tx3:#5E6A73;
+    /* --accent 是"盲道黄"：全站唯一的主操作色。
+       黄底黑字是全色盲也能分辨的明度组合（10.46:1），
+       真实世界的盲道本身就是黄砖，语义与观感是同一件事。 */
+    --accent:#F2C230; --accent-dark:#DBAE1C; --accent-ink:#151A1E;
+    --warn:#B23F26; --warn-bg:#FBE7E2; --warn-ink:#8A2F1C;
+    --info:#2F5D8C;
+    --ring:#0E6B57;
+    --tint:#E4EFE8; --tint-line:#CBDDD3; --tint-ink:#2F4A3C;
+    --bar-bg:#E2E7E6;
+    --notice-bg:#FFF3D4; --notice-line:#E9D6A4; --notice-ink:#6B4A05; --notice-ink-strong:#4F3603;
+    --num:ui-monospace,"SF Mono","Cascadia Mono",Consolas,"PingFang SC",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{
+    background:var(--bg);color:var(--tx);
+    font-family:"PingFang SC","Microsoft YaHei","HarmonyOS Sans SC","Noto Sans CJK SC",system-ui,sans-serif;
+    font-size:16px;line-height:1.7;
+    /* 底部留白 = 底栏实测高度 + 16px 余量。
+       算的是**实测值**而不是硬编码：底栏加一行、系统字号变大、
+       或者安全区（刘海/手势条）变高，这里都会自己跟着变 ——
+       否则最后一排按钮会被底栏永久压住，而视障用户看不见"被挡住了"，
+       只会以为那个功能不存在。 */
+    padding:16px 16px calc(var(--dock-h) + 16px);max-width:560px;margin:0 auto;
+  }
+  header{display:flex;align-items:baseline;gap:10px;margin-bottom:4px}
+  h1{font-size:22px;font-weight:700;letter-spacing:-.3px}
+  header span{font-size:12.5px;color:var(--tx3)}
+  /* 提示与元信息统一用 --tx3。这个色原来取 #8D9899，在 #F7F6F3 上只有 2.74:1，
+     而 WCAG 对正文小字要求 4.5:1 —— 也就是说界面里所有"教用户怎么用"的文字
+     恰好是最看不清的那一批。现在压到 #5E6A73，实测 5.02:1。
+     低视力用户在界面上最先放弃阅读的就是这些提示，它们不能是最弱的。 */
+  .hint{font-size:13.5px;color:var(--tx3);margin-bottom:16px}
+  /* 使用说明（首屏那三条要点）。它不是 .hint 那种"角落里的小字"，
+     而是**用户第一次打开时唯一的教程**，所以待遇必须和正文同级：
+       · 字号 15px（原来是 13.5），颜色用 --tx2 而不是更弱的 --tx3 ——
+         把说明书印成注脚，是这个页面原来最别扭的一处；
+       · 每条独立成行、左侧一条盲道黄竖条：低视力用户跳行后能顺着竖条
+         找回自己在读第几条；全盲用户则靠 <ul>/<li> 的列表语义
+         听到"列表，共 3 项"，知道还剩几条没听；
+       · 关键字加粗，扫读时先抓到动作短语。 */
+  .guide{
+    list-style:none;margin:0 0 12px;padding:0;
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    overflow:hidden;
+  }
+  .guide li{
+    position:relative;padding:10px 15px 10px 18px;
+    font-size:15px;line-height:1.65;color:var(--tx2);
+    border-bottom:1px solid var(--line);
+  }
+  .guide li:last-child{border-bottom:none}
+  /* 左侧竖条沿用全站的"颜色语言"：盲道黄=操作说明，绿=识别结果，
+     红=警告。不读文字也能分辨这一块是什么性质的内容。 */
+  .guide li::before{
+    content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--accent);
+  }
+  .guide b{color:var(--tx);font-weight:700}
+  /* 演示模式横幅：未接入识别模型时，所有"识别结果"其实都是内置示例。
+     这种事必须一眼可见 —— 否则用户会把它当成真实结果，
+     然后花几个小时去查"为什么读文字给我念走廊"。
+     用左侧粗色条 + 底色区分，低视力用户也能一眼分辨。 */
+  .demo{
+    background:var(--notice-bg);border:1px solid var(--notice-line);border-left:4px solid var(--warn);
+    border-radius:12px;padding:13px 15px;margin:0 0 14px;
+    font-size:14.5px;line-height:1.7;color:var(--notice-ink);
+  }
+  .demo b{display:block;font-size:15.5px;margin-bottom:5px;color:var(--notice-ink-strong)}
+  /* 语音故障条：底色从"演示模式黄"换成警告红系。
+     两件事必须一眼可分 —— 演示模式只说"内容是示例"，
+     语音故障却是"这个产品对你完全不可用"，严重程度差一个量级。 */
+  .demo.crit{background:var(--warn-bg);border-color:var(--warn);color:var(--warn-ink)}
+  .demo.crit b{color:var(--warn-ink)}
+  /* 原因/解决各占一行：横幅要能当"操作说明"读，挤成一段会没人看 */
+  .demo span{display:block;margin-top:3px}
+  /* 自检入口做成**整行**，不是行内小链接。
+     行内链接的触控高度只有 20px 左右，是全页最小的目标 ——
+     而这条横幅恰恰是给低视力用户和身边人看的，按不准就等于没给。 */
+  .demo a{
+    display:flex;align-items:center;min-height:46px;margin-top:2px;
+    color:inherit;font-weight:700;text-decoration:underline;
+    text-underline-offset:3px;touch-action:manipulation;
+  }
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;margin:12px 0}
+  /* 大按钮：视障用户靠触摸，按钮必须足够大（F13）。
+     间距从 10px 提到 16px：相邻兄弟元素的外边距会**折叠**，
+     写 10px 实测只有 10px，而不是 20px。视障用户靠手感定位，
+     10px 的缝在不同尺寸屏幕上几乎等于没有间隔，极易按到隔壁。
+     16px 是 Material 触控指引的最小值，也是本项目的实际下限。
+     高度从 64px 提到 72px：这是全站最重要的一个目标，值得再给 8px。 */
+  .btn{
+    display:block;width:100%;min-height:72px;border:none;border-radius:14px;
+    background:var(--accent);color:var(--accent-ink);font-size:20px;font-weight:700;
+    letter-spacing:.2px;margin:16px 0;cursor:pointer;
+    /* touch-action:manipulation 有两个作用：
+       ① 去掉移动端 300ms 点击延迟（视障用户对延迟极敏感，慢半拍就以为没按上）；
+       ② 仍然允许页面滚动与双指缩放，不牺牲可用性。 */
+    touch-action:manipulation;
+    transition:background .12s ease,transform .12s ease;
+  }
+  .btn:active{background:var(--accent-dark);transform:translateY(1px)}
+  .btn.sec{background:var(--card);color:var(--tx2);border:1.5px solid var(--line)}
+  .btn.sec:active{background:#EFF2F1}
+  /* 高危动作（呼叫志愿者 / 退出流程）改成「描边」而非实心红：
+     原来是红底实心，与主按钮抢注意力；现在实心红只在"真的要执行"那一刻出现，
+     颜色本身就成了状态机（描边 → 待确认 → 实心）。 */
+  .btn.warn{background:var(--card);color:var(--warn);border:1.5px solid var(--warn)}
+  .btn.warn:active{background:var(--warn-bg)}
+  .btn.sm{min-height:60px;font-size:18px;font-weight:600}
+  /* 只留 [disabled]。"正在处理"是用 .busy 表达的，aria-disabled 从未被设置过 ——
+     一个永不适用的选择器会让下一个人以为"某处真的会设它"。 */
+  .btn[disabled]{opacity:.45}
+  /* 处理中：按钮变为"等一等"的视觉态。不真正 disabled，
+     否则触摸探索会连报名字一起失效。 */
+  .btn.busy{opacity:.55}
+  /* 取景画面必须**固定高度**。
+     原来它是"宽度 100%、高度随摄像头比例自适应"，于是它有真实画面之后
+     页面高度会整体变高一屏 —— 对低视力用户是"我按了按钮，页面突然跳走了"，
+     对全盲用户更糟：靠"往上滑两下就能摸到某某按钮"建立的空间记忆一次性失效，
+     而他们没有任何办法察觉原因。
+     固定 200px + object-fit:cover：画面照样能用来对准，页面高度却不再变化。 */
+  /* 页面里没有任何 <img>，所以原来那个 img.preview 选择器永远不会命中，已删。 */
+  video{width:100%;height:200px;object-fit:cover;border-radius:12px;background:#000;display:block}
+
+  /* ============ 固定底部导航栏（顺序导航） ============
+     这是"按钮按不准"这个问题的正面回答。
+     视障用户无法"看见并按准"页面上那十几个分散的按钮：触摸探索要求手指
+     先摸到目标，而目标是分散在几屏高度里的 —— 摸到想要的那个要试很多次，
+     摸错了抬手就执行了，中间没有任何"我先确认一下"的机会。
+
+     对策不是把按钮做大（72px 已经接近上限，再大屏幕就放不下几个），
+     而是**把分散目标压缩成固定位置目标**：
+       · 位置固定 —— 固定在屏幕下边缘，盲用户可以用"摸到屏幕最下沿再往上一点"
+         这个可靠的定位策略，不需要在页面里逐个试；
+       · 数量固定 —— 只有三个（外加语音输入一行），不存在"摸错到隔壁功能"的问题；
+       · 顺序可遍历 —— 配合语音"第 N 项，共 M 项"，用户能建立完整的心智地图，
+         并且知道自己有没有漏掉。
+
+     底栏的键也走 bindAccessible，因此同样具备触摸探索与震动反馈。
+     #dock 只是"固定住这两行"的容器；三键仍住在 <nav> 里（见 HTML 那段注释：
+     顺序导航会整批跳过 <nav> 内的元素）。 */
+  #dock{
+    position:fixed;left:0;right:0;bottom:0;z-index:80;
+    background:var(--card);border-top:2px solid var(--line);
+    padding:8px 14px calc(8px + env(safe-area-inset-bottom,0px));
+    max-width:560px;margin:0 auto;
+    box-shadow:0 -6px 20px rgba(0,0,0,.07);
+  }
+  /* 「按住说话」独占第一行、整行通栏。
+     用白色描边而不是主色实心：底栏里只能有一个"实心黄"，
+     那个位置必须留给「执行」—— 两个同色大按钮摞在一起，低视力用户
+     就得分不清哪个是主动作，而这正是他们最不该被额外要求的事。
+
+     高度 54 / 56px 是**手机上取舍后的结果**：底栏每高 1px，结果就少看见 1px。
+     真机截图里底栏 + 结果把可视区吃光，正文只露出一行 —— 所以把它压下来。
+     54px 仍高于 WCAG 2.5.5 的 44px 与 Material 的 48px 下限；
+     而"按住不放"这个动作需要的是**够稳**的目标，54px 通栏的稳定性
+     远好过一个小方块的 72px。字号也只降到 17px，没有为了省地方牺牲可读性。 */
+  #dock .btn.nav-voice{
+    width:100%;min-height:54px;font-size:17px;margin:0 0 8px;
+    border-width:2px;font-weight:700;
+  }
+  #nav{display:flex;gap:10px}
+  /* 导航栏里的键不用 72px 那么高：它们的**位置**本身就固定，数量也少，
+     定位成本已经很低，把高度让给内容区更划算。56px 仍在触控下限之上。 */
+  #nav .btn{margin:0;flex:1;min-height:56px;font-size:17px;padding:0 8px}
+  #nav .btn.nav-run{font-size:19px}
+  /* 焦点项提示：低视力用户需要看到"当前选中的是谁" */
+  @media (max-width:360px){ #nav .btn{font-size:15px} #dock .btn.nav-voice{font-size:16px} }
+  /* ===== 跟屏区（吸顶常驻）=====
+     用 sticky 而不是 fixed：fixed 脱离文档流，得另外算一块等高占位，
+     页面结构一改就错位、露出空洞；sticky 在原位吸顶，滚到它之前
+     老老实实待在文档流里，滚过去之后才贴住顶端。
+     z-index 60 低于底栏（80）：底栏永远在最上层，否则吸顶区会把
+     底栏压住 —— 而底栏是盲用户定位整个界面的锚点。
+     max-height + overflow:auto 是道保险：结果特别长时不至于把整屏吃光，
+     下面永远留得出一块可操作区域（超长时在容器内滚）。 */
+  .live{
+    position:sticky;top:0;z-index:60;
+    background:var(--bg);padding-top:8px;
+    /* 上限按**手机的实际可用高度**算，而不是拍脑袋的 52vh。
+       手机上一屏要同时装下：吸顶区 + 底栏 + 浏览器地址栏，
+       52vh 会让结果的下半截正好被底栏压住 —— 真机实测就是这样：
+       正文只露出"【前方情况】室内有储物柜和"一行，其余全被挡住。
+       减掉底栏实测高度之后，结果永远完整可见。
+       dvh 是"动态视口高度"（地址栏收起/展开时跟着变，vh 不会），
+       先写 vh 兜底，支持的浏览器再用 dvh 覆盖。 */
+    max-height:calc(100vh - var(--dock-h) - 14px);
+    max-height:calc(100dvh - var(--dock-h) - 14px);
+    /* overflow:auto 是道保险：结果特别长时不至于把整屏吃光。
+       **但刻意不设 overscroll-behavior:contain** ——
+       它会在区内滚到边界后掐断滚动链，用户手指停在结果上往下滑，
+       页面就纹丝不动（视障用户习惯在屏幕中间滑动，正好落在这一区）。
+       让它照常把滚动传给页面：内容不长时不产生滚动、直接滚页面；
+       内容超长时先滚区内，滚到底再带动页面 —— 两种都是用户想要的。 */
+    overflow:auto;
+  }
+  /* 还没出结果时不吸顶：首屏不该被一块空占位先吃掉一大截，
+     用户往下滚到功能按钮的距离越短越好。出结果时才切换成吸顶。 */
+  .live.empty{position:static}
+  /* 刚拍下的那一张。视障用户看不见它，但**陪同者与低视力用户**需要
+     "我拍的到底是哪张"这个信息 —— 拍糊了要重拍时，没有它就无从判断；
+     而"这张能用吗"正是取景质检想说清、却只能靠图来说清的事。
+     高 88px：手机上它是**回执**不是作品，得给结果让位 ——
+     原来 130px 加上结果区，首屏几乎没剩下能滚的地方。 */
+  #shot{
+    display:block;width:100%;height:88px;object-fit:cover;
+    border-radius:12px;border:1px solid var(--line);margin:0 0 8px;background:var(--bar-bg);
+  }
+  #result{
+    background:var(--card);border:1px solid var(--line);border-left:4px solid var(--ring);
+    border-radius:14px;padding:15px 16px;margin:8px 0;min-height:56px;
+    /* 21px：低视力用户的主要信息获取通道，比"好看"更重要的是看得清。
+       行高 1.85 让中文长句不挤在一起，也降低跳行概率。 */
+    font-size:21px;line-height:1.8;font-weight:500;white-space:pre-wrap;
+  }
+  #result .ph{color:var(--tx3);font-size:16px;font-weight:400}
+  .stepbar{display:flex;align-items:center;gap:9px;font-size:14px;color:var(--tx2);margin-bottom:11px;flex-wrap:wrap}
+  .badge{background:var(--tint);border-radius:7px;padding:4px 11px;font-size:13px;color:var(--tint-ink);font-weight:600}
+  .bar{height:9px;background:var(--bar-bg);border-radius:5px;overflow:hidden;margin:6px 0 14px}
+  .bar>i{display:block;height:100%;background:var(--ring);width:0;transition:width .3s}
+  input[type=text]{
+    width:100%;padding:15px;border:1.5px solid var(--line);border-radius:12px;
+    font-size:17px;background:var(--card);color:var(--tx);
+  }
+  label{font-size:14px;color:var(--tx2);display:block;margin-bottom:7px;font-weight:600}
+  /* 间距 10px → 14px：两个并排的 SOP 按钮挨太近，误触会走错流程 */
+  .row{display:flex;gap:14px}
+  .row .btn{margin:10px 0}
+  /* 文字类型 chip：原来高约 36px、间距 8px —— 两者都低于触控下限。
+     视障用户的目标定位精度差，36px 高的目标实际命中率很低，
+     而且 8px 的缝会让相邻类型互相"抢"触摸。改为 48px 高 + 12px 缝。 */
+  .chips{display:flex;gap:12px;flex-wrap:wrap;margin:11px 0 8px}
+  .chip{
+    display:inline-flex;align-items:center;justify-content:center;
+    min-height:48px;padding:10px 19px;
+    border:1.5px solid var(--line);background:var(--card);color:var(--tx2);
+    border-radius:999px;font-size:16px;font-weight:600;
+    cursor:pointer;touch-action:manipulation;
+  }
+  /* 选中态原来是绿底白字 —— 实测只有 3.00:1，而小字要求 4.5:1，
+     也就是说用户明明选中了"药品"，却看不清选中态。
+     现在改成黄底近黑字（10.46:1），并保留 ✓ 符号做第二通道。 */
+  .chip.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  /* 选中态加一个"✓"，让低视力用户不必依赖颜色深浅区分选中。
+     仅靠色差对色觉障碍/低视力用户不可靠，加符号是双通道。 */
+  .chip.on::before{content:'✓\00a0';font-weight:800}
+  /* 距离表：把"几点方向几步"直接画出来，方便答辩时一眼看到 F03 有效。
+     数字用等宽 —— "12点方向 5 步"是全界面信息密度最高的三个字符，
+     用户的整个动作（转半步还是绕开）都挂在这两个数字上。 */
+  .dist{display:flex;gap:9px;flex-wrap:wrap;margin-top:11px}
+  .dist b{
+    font-family:var(--num);font-variant-numeric:tabular-nums;
+    background:var(--tint);border:1px solid var(--tint-line);color:var(--tint-ink);
+    border-radius:10px;padding:7px 13px;font-size:16px;font-weight:700;
+    letter-spacing:-.2px;
+  }
+  .dist b.near{background:var(--warn-bg);border-color:#EDC7BC;color:var(--warn-ink)}
+  .sec-title{font-size:14px;font-weight:600;color:var(--tx3);margin:19px 0 2px;letter-spacing:.4px}
+  .ticket{background:#EFF2F1;border:1px solid var(--line);border-radius:12px;padding:13px;margin-top:11px;font-size:15px;color:var(--tx2)}
+  /* 结果区可点重听：视障用户一次没听清是常态（环境嘈杂、注意力被转移），
+     没有重听入口就只能重新走一遍整个流程。 */
+  #result{position:relative}
+  #result.retap{cursor:pointer}
+  #result.retap::after{
+    content:'轻触重听';position:absolute;right:14px;bottom:9px;
+    font-size:13px;color:var(--tx3);letter-spacing:.4px;
+  }
+
+  /* ===== 高危动作的二次确认态 =====
+     "呼叫人工志愿者"和"退出流程"是**不可逆**动作：前者会真的把求助派出去，
+     后者会丢掉整个 SOP 进度。一次误触的代价远高于多按一下。 */
+  /* 从"虚线"改成"**圆点**"：形状差异（实线 vs 圆点）比颜色差异更可靠，
+     色觉障碍用户也能分辨。圆点直接取自盲道的「停步砖」——
+     同一语义在瓷砖上是凸起、在屏幕上是圆点、在耳朵里是"再点一次确认"。
+     加上浅红底，让"已上膛"这件事无论在什么光线下都看得出来。 */
+  .ask{
+    outline:4px dotted var(--warn);outline-offset:4px;
+    background:var(--warn-bg)!important;color:var(--warn-ink)!important;
+    border-color:var(--warn)!important;
+  }
+
+  /* ===== 启动闸门（F13 无障碍交互） =====
+     为什么必须有它：浏览器安全策略规定，页面在发生第一次用户交互之前，
+     speechSynthesis.speak() 会被直接拒绝（Chrome 自 M71 起执行该规则，
+     原文：only allow speak() to succeed if the current frame has ever had user activation）。
+     与其被动静音报错，不如把这一次「必然会发生」的触摸做成明确的启动动作。
+     设计约束：整屏都是按钮，没有关闭键、没有倒计时、没有需要阅读的内容。 */
+  #gate{
+    /* 底色从墨绿 #2E3A2C 改为夜空靛蓝 #101820：
+       "启明"是黎明前最亮的那颗星，夜路是它的场景，深蓝比墨绿更贴事。
+       浅字对比 16.63:1，比原来更高。 */
+    position:fixed;inset:0;z-index:999;background:#101820;color:#F5F7F6;
+    display:flex;align-items:center;justify-content:center;text-align:center;
+    padding:28px;-webkit-tap-highlight-color:transparent;cursor:pointer;
+    transition:opacity .18s ease;
+  }
+  /* 顶部一条「停步砖」圆点带：语义是"停在这里，从这里开始"。
+     这是全屏唯一被点亮的装饰，其余保持安静 —— 用户此刻只需要做一件事。 */
+  #gate::before{
+    content:'';position:absolute;left:0;right:0;top:0;height:16px;
+    background-image:radial-gradient(circle,#7FCBA8 2px,transparent 2.4px);
+    background-size:13px 13px;opacity:.9;
+  }
+  #gate>div{position:relative;z-index:1}
+  #gate.gone{opacity:0;pointer-events:none}
+  .gate-logo{font-size:42px;font-weight:800;letter-spacing:5px;margin-bottom:24px}
+  .gate-tip{
+    font-size:25px;font-weight:700;line-height:1.55;
+    border:3px solid #7FCBA8;border-radius:20px;padding:18px 26px;margin-bottom:20px;
+  }
+  .gate-note{font-size:14.5px;color:#A9B4B8;line-height:1.9}
+
+  /* ===== 触摸探索的焦点态 =====
+     手指划过哪个按钮，哪个就描边高亮；这是给低视力用户看的，
+     给全盲用户看的是同时发出的语音 + 震动。三重通道冗余。 */
+  .focusring{outline:3px solid var(--ring);outline-offset:3px}
+
+  /* ===== 键盘焦点 =====
+     答辩用笔记本、志愿者用外接键盘时走这条路。触摸探索的 focusring 只覆盖手指，
+     键盘 Tab 过去必须同样看得见 —— 原来只有浏览器默认的那一圈细虚线，
+     在投影上几乎看不见。 */
+  .btn:focus-visible,.chip:focus-visible,
+  #gate:focus-visible,input:focus-visible,[role=button]:focus-visible{
+    outline:3px solid var(--ring);outline-offset:3px;
+  }
+  input[type=text]:focus-visible{outline:3px solid var(--ring);outline-offset:1px;border-color:var(--ring)}
+
+  /* ===== 桌面端 / 大屏（答辩投影、陪同者笔记本） =====
+     刻意不做左右分栏，只加宽并整体放大字号。理由见 docs/UI设计方案_20260926.html：
+     本产品的用户视线永远集中在"一个结果"上，分栏会让低视力用户在两个区域间
+     来回扫视，增加认知负担。大屏上真正需要的是"看得更清"，不是"塞得更多"。 */
+  @media (min-width:900px){
+    /* 底部留白必须跟着底栏一起放大：底栏在桌面端也是 fixed 的，
+       这里若沿用原来的 56px，最后一排按钮会被底栏永久遮住 ——
+       而低视力用户在桌面端恰恰是要靠看的，遮住等于那个功能不存在。 */
+    body{max-width:720px;padding:26px 26px calc(var(--dock-h) + 26px);font-size:17px}
+    /* 底栏要跟着内容列一起变宽，否则会出现"内容 720px、底栏 560px"的错位，
+       看起来像两个互不相干的东西。 */
+    #dock{max-width:720px;padding:12px 26px calc(12px + env(safe-area-inset-bottom,0px))}
+    #nav .btn{min-height:72px;font-size:19px}
+    #dock .btn.nav-voice{min-height:68px;font-size:20px}
+    h1{font-size:25px}
+    header span{font-size:13.5px}
+    .hint{font-size:14.5px}
+    .guide li{font-size:16px;padding:14px 18px 14px 21px}
+    .btn{min-height:80px;font-size:22px;margin:18px 0}
+    .btn.sm{min-height:64px;font-size:19px}
+    .chip{min-height:52px;font-size:17px;padding:11px 22px}
+    #shot{height:140px}
+    #result{font-size:24px;line-height:1.8;padding:22px;min-height:72px}
+    #result .ph{font-size:17px}
+    .dist b{font-size:17px;padding:8px 15px}
+    .demo{font-size:15px}
+    video{max-height:340px;object-fit:cover}
+  }
+  /* 鼠标悬停只在真有指针的设备上生效。触摸设备上 :hover 会"粘住"，
+     按钮会一直停在高亮态，用户以为它还在被按下。 */
+  @media (hover:hover) and (pointer:fine){
+    .btn.sec:hover,.btn.sm:hover{background:#F4F6F5;border-color:#BEC8C8}
+    .btn.warn:hover{background:var(--warn-bg)}
+    .chip:hover{border-color:#BEC8C8}
+    .btn:not(:active):hover{filter:brightness(1.02)}
+  }
+
+  /* ===== 深色主题 =====
+     不是"顺便做个夜间模式"。视网膜色素变性等眼病会带来明显畏光，
+     而这在视障群体中很常见。prefers-color-scheme 是用户已经表达过的系统级偏好，
+     应用没有理由不接。
+     刻意只翻转"底色与文字"，不动 --accent 与 --warn：这两个色承载的是
+     "点这里"和"小心"的语义，如果它们随主题漂移，用户靠颜色建立的动作记忆就会失效。 */
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#11171B; --card:#19222A; --line:#2B363E;
+      --tx:#E9EEEF; --tx2:#BFC9CC; --tx3:#A6B1B6;
+      --ring:#5FD3A6;
+      --tint:#1E2C2A; --tint-line:#31443F; --tint-ink:#A8D6C4;
+      --bar-bg:#25313A;
+      --warn-bg:#2E1F1B; --warn-ink:#F0A08A;
+      --notice-bg:#2B2416; --notice-line:#4A3D1E; --notice-ink:#F0D9A0; --notice-ink-strong:#FBE7BB;
+      --info:#8FB4DC;
+    }
+    #result.retap::after{color:var(--tx3)}
+    .btn.sec:active{background:#212C34}
+    .ticket{background:#1E272E}
+  }
+
+  /* ===== 尊重系统的"减少动态效果" =====
+     前庭功能障碍用户会因动效产生眩晕。本项目的动效本来就极克制，
+     这里只是把它们全部关掉：状态切换靠颜色与形状本身表达，不依赖过渡。 */
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{
+      animation-duration:.001ms!important;animation-iteration-count:1!important;
+      transition-duration:.001ms!important;scroll-behavior:auto!important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<!-- ===================== 启动闸门 ===================== -->
+<div id="gate" role="button" tabindex="0"
+     aria-label="轻触屏幕任意位置，开始使用启明随行">
+  <div>
+    <div class="gate-logo">启明随行</div>
+    <div class="gate-tip">轻触屏幕<br>任意位置开始</div>
+    <div class="gate-note">
+      首次使用需要一次触摸来开启语音播报<br>
+      这是浏览器的安全策略，之后即可自动播报
+    </div>
+  </div>
+</div>
+
+<main>
+<header>
+  <h1>启明随行</h1>
+  <span>视障场景理解与代办助手</span>
+</header>
+<!-- 使用说明：原来是**一整段 100 字的长句**，三个问题叠在一起：
+     ① 字号 13.5px 是全页最小的字，偏偏它教的正是"这玩意儿怎么用"；
+     ② 五件事连成一段，低视力用户在行间跳行后找不回自己读到哪儿；
+     ③ 最后两条（语音、紧急求助）最重要，却埋在段落尾巴上。
+     现在改成"一要点一行 + 关键字加粗 + 字号提到 15px"：
+     要扫读的人一眼拿到操作方式，要细读的人每行都是独立完整的句子。 -->
+<ul class="guide">
+  <li><b>摸着就念，抬手就开</b>手指划过按钮会念名字。</li>
+  <li><b>找不到功能，用底栏</b>「上一个 / 执行 / 下一个」挨个听，顺序自上而下。</li>
+  <li><b>说一声也行</b>按住底栏「按住说话」。紧急时长按「执行」呼叫志愿者。</li>
+</ul>
+
+<!-- 演示模式提示条：由 /api/meta 决定是否显示 -->
+<div class="demo" id="demoBar" style="display:none" role="status"></div>
+
+<!-- 语音未出声提示条：由运行期实测决定（见 verifySpeech）。
+     和演示模式分成两条，因为它们是**两件不同的事**：
+     演示模式说"内容可信吗"，这条说"你还听得见吗"。 -->
+<div class="demo crit" id="voiceBar" style="display:none" role="status"></div>
+
+<!-- 结果显示区：大字号，照顾低视力用户。
+     role="status" + aria-live 是给系统读屏（TalkBack / VoiceOver）用的。
+
+     ⚠ 这里有一个**已知取舍**，不是疏漏：
+     真实视障用户手机里几乎必然开着读屏，而本应用自己也会用 speechSynthesis
+     播报结果 —— 于是两条通道会重复念一遍同样的内容。看起来"加了 aria-live
+     反而更吵"，那为什么不撤掉？因为两种错法的代价不对等：
+       · 保留 → 读屏用户听到两遍（冗余，烦但信息完整）；
+       · 撤掉 → iOS 上 VoiceOver 会直接抢占/压制 Web Speech 的语音通道，
+         本应用的播报可能完全不发声，而此时读屏也不会主动朗读结果区，
+         用户得到的是**零播报**，且没有任何迹象能看出为什么。
+     "重复"是可恢复的，"沉默"不是。同理，结果区也刻意不放进顺序导航的
+     "功能列表"里（见 bindAnnounceOnly），避免用户按「执行」时对着一段
+     格式化文本做无意义的操作。 -->
+<!-- ===== 跟屏区（吸顶常驻）=====
+     为什么要吸顶：用户按下「拍照看看周围」之后，几乎必然会**继续往下滚**
+     去摸别的功能，而识别结果落在上面 —— 结果就这么消失在他身后了。
+     原来的 revealEl() 只是"滚一次"：它解决的是"结果出来了没看见"，
+     解决不了"看完又滑走了"。低视力用户要反复上下翻，全盲用户则根本
+     不知道自己刚才那条结论还在不在屏幕上。
+     现在把「刚拍的那张照片 + 识别结果 + 距离表」封进一个 sticky 容器：
+     页面滚到哪儿它都停在视口顶端，边走边看不必回头翻。
+     高度上限按**手机实际可用高度**算（视口 − 底栏 − 余量，见 .live），
+     结果再长也不会把整屏吃光；而且刻意**不设** overscroll-behavior:contain ——
+     那会掐断滚动链，用户手指停在结果上往下滑时页面纹丝不动。
+     初始带 .empty：还没出结果时不吸顶，首屏不该被一块空占位先吃掉。 -->
+<div id="live" class="live empty">
+  <img id="shot" alt="最近拍下的照片" style="display:none">
+  <div id="result" role="status" aria-live="polite" tabindex="-1"><span class="ph">还没有内容。点「拍照看看周围」开始。</span></div>
+  <!-- 这里原本还有一行「耗时 4586 ms（预处理 2ms）／模型 GLM-4.1V-Thinking-Flash
+       （已降级 F17）」。已按用户要求撤掉：那是写给评委看的元信息，
+       对使用者是纯噪音 —— 全盲用户听不到（本来就不播报），低视力用户却要为它
+       让出一块屏幕；而"已降级"三个字更容易被当成故障提示，让人以为识别坏了。
+       模型名与耗时照旧写进 console（地址栏加 ?debug=1 可见），诊断能力不丢。 -->
+  <div class="dist" id="dist"></div>
+</div>
+
+<div class="card">
+  <video id="cam" autoplay playsinline muted style="display:none"></video>
+  <canvas id="cv" style="display:none"></canvas>
+
+  <button class="btn" id="btnScene" aria-label="拍照看看周围">拍照看看周围</button>
+
+  <!-- 用 <h2> 而不是 <p class="sec-title">：视觉完全一样（样式挂在 class 上），
+       但读屏用户可以按 H 键在这几组之间跳转。原来全页只有一个 <h1>、
+       一个 <h2> 都没有，"标题导航"等于失效，用户只能逐行听下去。 -->
+  <h2 class="sec-title">读文字（选择类型，读得更准）</h2>
+  <div class="chips" id="docChips">
+    <span class="chip on" data-t="auto" role="button" aria-label="文字类型，自动识别">自动识别</span>
+    <span class="chip" data-t="drug" role="button" aria-label="文字类型，药品">药品</span>
+    <span class="chip" data-t="sign" role="button" aria-label="文字类型，指示牌">指示牌</span>
+    <span class="chip" data-t="price" role="button" aria-label="文字类型，价签菜单">价签菜单</span>
+    <span class="chip" data-t="doc" role="button" aria-label="文字类型，单据票据">单据票据</span>
+  </div>
+  <button class="btn sec" id="btnRead" aria-label="拍照读文字">拍照读文字</button>
+
+  <h2 class="sec-title">带我做流程（SOP 引导）</h2>
+  <div class="row">
+    <button class="btn sec sm" id="btnSopMedical" aria-label="就医引导">就医引导</button>
+    <button class="btn sec sm" id="btnSopTransit" aria-label="乘车引导">乘车引导</button>
+  </div>
+
+  <button class="btn warn" id="btnHelp" aria-label="呼叫人工志愿者">呼叫人工志愿者</button>
+</div>
+
+<!-- SOP 控制区：只在有会话时显示 -->
+<div class="card" id="sopCard" style="display:none">
+  <div class="stepbar">
+    <span class="badge" id="sopFlow">流程</span>
+    <span id="sopStep">第 1 步</span>
+  </div>
+  <div class="bar"><i id="sopBar"></i></div>
+  <button class="btn" id="btnNext" aria-label="拍照确认，继续下一步">拍照确认，继续下一步</button>
+  <button class="btn sec" id="btnManual" aria-label="已到达，直接下一步">已到达，直接下一步</button>
+  <!-- 退回上一步：视障用户只能靠"听一句描述"判断是否到达，误判比明眼用户高得多，
+       而原来退不回去 —— 误判一次就得退出流程从第 1 步重走。
+       它刻意排在"已到达，直接下一步"下面而非上面：前进仍是主路径，
+       但纠错通道必须在场，且必须能被顺序导航摸到（不能只在视觉上存在）。 -->
+  <button class="btn sec" id="btnBack" aria-label="退回上一步，刚才判断错了">退回上一步</button>
+  <button class="btn sec" id="btnQuit" aria-label="退出或重新开始流程">退出 / 重新开始</button>
+</div>
+
+<div class="card">
+  <label for="q">补充说明（可不填）</label>
+  <input type="text" id="q" placeholder="例如：挂号窗口在哪">
+</div>
+
+<!-- ===== 固定底栏：语音输入 + 顺序导航三键 =====
+     把页面上十几个分散按钮压成"位置固定"的几个目标。
+     盲用户可以用"摸到屏幕最下沿"这一招可靠定位到这里，
+     从此不需要在整页里靠试探去找某个功能。
+     刻意用「◀ / ▶」而不是"左右"等方位词：触摸时靠手感，视觉上只是辅助。
+
+     「按住说话」为什么从页面中间搬到了这里：
+     它原先夹在「补充说明」卡片里，要往下滚过两屏才摸得到 ——
+     而"想说句话"恰恰是用户**手上不方便、眼睛也找不到**的时候，
+     那正是最不该要求他先滚动去找按钮的时刻。
+     搬到底栏第一行、整行通栏、高 60px，和「执行」同处一个
+     闭着眼也摸得到的位置。
+
+     ⚠ 它放在 #dock 里、而**不是 <nav> 里**，这一层结构是有意的：
+     navigableTargets() 会把 <nav> 内的元素整批排除（它们是导航控制器，
+     不是被导航的对象）。若为了"看起来在底栏"而把它塞进 <nav>，
+     它就从顺序导航里消失了 —— 全盲用户按「下一个」永远走不到它，
+     而"按住说话"恰恰是本应用最重要的输入通道（见 16a 那组断言）。
+     所以：物理位置在底栏里，"身份"仍是普通功能项。
+     它单独占一行而不是挤进三个键那一行：按压式（按住不放）
+     和点击式（点一下）混在一行里，手指一滑就把录音变成了点击。 -->
+<div id="dock">
+  <button class="btn sec nav-voice" id="btnVoice" aria-label="按住说话">按住说话</button>
+  <nav id="nav" aria-label="功能导航：上一个、执行、下一个。顺序和页面从上到下一致。长按执行可以直接呼叫人工志愿者">
+    <button class="btn sec" id="btnPrev" aria-label="上一个功能">◀ 上一个</button>
+    <button class="btn nav-run" id="btnRun" aria-label="执行当前选中的功能">执行</button>
+    <button class="btn sec" id="btnNextItem" aria-label="下一个功能">下一个 ▶</button>
+  </nav>
+</div>
+
+<!-- ===== 播报速度 =====
+     自动挑"最温柔的声音"本质上是一个猜测：温柔与否很主观，
+     而且各设备装的语音差别极大（有的手机上只有一个很生硬的合成音）。
+
+     这里原来还有一个「换个声音」按钮，**已按用户要求撤掉**。
+     撤掉它不只是"少一个按钮"：候选表里那些名字（"小艺""Kangkang"…）
+     对视障用户是一串无法验证的字符串 —— 他没法预判"下一个"是不是更好听，
+     只能一次次点过去试听，而每次试听都要打断当前正在听的内容。
+     真正能自我判断、且有明确方向的只有**快慢**：嫌快嫌慢是具体的，
+     而且调完立刻能验证。所以只留调速，把这条通道做扎实。
+     （声音本身仍由 pickSoftVoice() 自动挑最柔和的中文女声。） -->
+<div class="card">
+  <h2 class="sec-title">播报速度（嫌快嫌慢都可以调）</h2>
+  <p class="hint" id="spkInfo">正在使用默认声音</p>
+  <div class="row">
+    <button class="btn sec sm" id="btnSlower" aria-label="说得慢一点">慢一点</button>
+    <button class="btn sec sm" id="btnFaster" aria-label="说得快一点">快一点</button>
+  </div>
+</div>
+
+</main>
+
+<script>
+const API = (location.protocol === 'file:' || location.port === '5173') ? 'http://localhost:8000' : '';
+const $ = (s) => document.querySelector(s);
+
+/* ================================================================
+   访问口令（只有部署版才有）
+
+   公网版的接口需要一道门槛：没有它，链接给谁、谁就能一直调用后端，
+   把免费模型的并发额度吃干净 —— 表现是"演示现场一片超时"，
+   而现场没人会想到原因是陌生流量。
+
+   口令**随链接一起发**（https://…/?k=xxxx），使用者不需要输入任何东西。
+   存 localStorage 是为了"地址栏里没有 ?k= 时也还能继续用"
+   （从书签、历史记录、或者别人只发了域名进来）。
+
+   这不是密钥：它不保护数据，只挡白刷。真正的 API Key 在后端，
+   前端一个字节都拿不到。
+   ================================================================ */
+const ACCESS_KEY = 'qm_access_v1';
+let accessCode = '';
+try{
+  const q = new URLSearchParams(location.search).get('k');
+  if(q && q.trim()){
+    accessCode = q.trim();
+    localStorage.setItem(ACCESS_KEY, accessCode);
+  }else{
+    accessCode = (localStorage.getItem(ACCESS_KEY) || '').trim();
+  }
+}catch(e){}
+const resultEl = $('#result'), distEl = $('#dist');
+
+/* ================================================================
+   第 1 层：触觉反馈（F13）
+   震动是零延迟、不占用听觉通道、也不依赖视力的确认方式。
+   视障用户在嘈杂环境里可能听不清语音，但一定能感觉到震动。
+   ================================================================ */
+function haptic(pattern){
+  try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch(e){}
+}
+/* 约定（全站统一，答辩时可直接讲）。
+   原先代码里散落着两处魔数 20 与 30，语义表里却没有登记 ——
+   对全盲用户来说震动是唯一的即时通道，语义必须一一对得上，
+   多出两种"说不出意思的震动"等于给了噪音。
+   现在补全并全部走常量，禁用裸数字：
+
+     轻震  12ms          = 手指碰到某个按钮（探索）
+     单震  22ms          = 确认执行
+     结果  30ms          = 内容到达（与"开始执行"区分开）
+     双震  [18,60,18]    = 系统就绪
+     录音  [25,40,25]    = 开始录音（"按住说话"专用）
+     心跳  [12,120,12]   = 录音仍在进行（每 2.5 秒一次）
+     取消  [10,40,10]    = 需要确认 / 已撤销（两短震，与"出错"区分）
+     错误  [40,80,40]    = 失败，需要重试                                  */
+const HAPTIC_TOUCH  = 12;
+const HAPTIC_TAP    = 22;
+const HAPTIC_RESULT = 30;
+const HAPTIC_READY  = [18,60,18];
+const HAPTIC_REC    = [25,40,25];
+/* 录音心跳：必须与"轻震 12ms（手指碰到按钮）"在**节奏上**区分开。
+   二者单次时长相同，但心跳是两短震，用户感受到的是"一下、又一下"，
+   而探索碰到目标永远是孤零零的一下 —— 不会混淆。
+   为什么不复用 12ms：录音期间手指正按着按钮，若用同样的单震，
+   用户无法判断这一下是"我碰到东西了"还是"还在录"。
+   对全盲用户，震动是唯一的即时通道，语义必须一一对得上（见下方断言）。 */
+const HAPTIC_REC_TICK = [12,120,12];
+const HAPTIC_CANCEL = [10,40,10];
+const HAPTIC_ERR    = [40,80,40];
+
+/* ================================================================
+   第 2 层：语音播报（F14 可打断）
+   ================================================================ */
+const TTS_OK = ('speechSynthesis' in window) && ('SpeechSynthesisUtterance' in window);
+let zhVoice = null, voicesLoaded = false;
+
+/* ================================================================
+   选一个「温柔一点」的声音
+
+   要拆成两件事，而且**第一件才是决定性的**：
+
+   ① 选对 voice。
+      原来只写"取第一个 zh 语音"，这在不少机器上恰好取到男声 ——
+      Windows 的 Kangkang（康康）/ Yunxi（云希）恰好常排在前面，
+      说话偏硬、偏快，听着像在播报通知。
+      晓晓（Xiaoxiao）、晓伊（Xiaoyi）、慧慧（Huihui）、婷婷（Ting-Ting）
+      这类女声天生更柔和。
+      做法是**先把已知男声挑出来排到最后，再从剩下的里按柔和度白名单排序**，
+      而不是取第一个。
+      （/male/ 不会误伤 "Female" —— male 前面是字母 e，不是词边界；
+       仍写成 \bmale\b 让"这里在排男声"这个意图显式。）
+
+   ② 再调参数。
+      rate 从 1.02 降到 0.95：慢一点 = 从容、不赶人，正合"走动着听一句话"
+      这个场景；中文 TTS 提速后声调还容易发飘。
+      pitch 只抬到 1.04 —— 抬多了（>1.15）会变尖、刺耳，反而更累。
+      **必须如实说明：Windows 的 SAPI 语音基本忽略 pitch。**
+      所以在 Windows 上能听出来的"变温柔"主要来自换 voice + 降速。
+      不写清这一点，用户改完会说"没什么变化，是不是没生效"。
+
+   ③ 自动挑不一定合意（"温柔"本来就主观，且各设备装的语音差别很大），
+      所以页面里配了「播报设置」让用户自己换 —— 见 bindVoiceSettings()。
+   ================================================================ */
+const VOICE_MALE = /kangkang|康康|yunxi|云希|yunjian|云健|yunye|云野|yunfeng|云枫|yunhao|云皓|\bmale\b|男/i;
+const VOICE_SOFT = [
+  /xiaoxiao|晓晓/i,        // Edge / Win11 的自然语音，最典型的温柔女声
+  /xiaoyi|晓伊/i,
+  /yunyang|云扬/i,
+  /yunxia|云夏/i,
+  /xiaomo|晓墨/i,
+  /xiaorui|晓睿/i,
+  /xiaoshuang|晓双/i,
+  /xiaohan|晓涵/i,
+  /huihui|慧慧/i,          // Windows 老牌中文女声：稳，音质一般
+  /ting-?ting|婷婷/i,      // iOS / macOS 中文女声
+  /yaoyao|瑶瑶/i,
+  /meijia|美佳/i,
+  /female|女/i,
+];
+
+/* 语音偏好（走 localStorage 持久化）。
+   初值就是"温柔档"：慢一点、轻一点。用户改过之后要记住 ——
+   否则每次重开页面都退回默认，等于没得调。 */
+const VOICE_PREF_KEY = 'qm_speech_pref_v1';
+const speechPref = { name: '', rate: 0.95, pitch: 1.04 };
+try{
+  const raw = JSON.parse(localStorage.getItem(VOICE_PREF_KEY) || '{}') || {};
+  if(typeof raw.name === 'string') speechPref.name = raw.name;
+  if(typeof raw.rate  === 'number' && raw.rate  >= 0.75 && raw.rate  <= 1.35) speechPref.rate  = raw.rate;
+  if(typeof raw.pitch === 'number' && raw.pitch >= 0.80 && raw.pitch <= 1.30) speechPref.pitch = raw.pitch;
+}catch(e){}
+function saveSpeechPref(){
+  try{ localStorage.setItem(VOICE_PREF_KEY, JSON.stringify(speechPref)); }catch(e){}
+}
+
+function isZhVoice(v){
+  return /^(zh|cmn|yue)/i.test(v.lang || '')
+      || /zh|chinese|中文|普通话|普通話|國語|国语|粤语|粵語/i.test((v.lang || '') + ' ' + (v.name || ''));
+}
+function softScore(v){
+  const s = (v.name || '') + ' ' + (v.voiceURI || '');
+  for(let i = 0; i < VOICE_SOFT.length; i++) if(VOICE_SOFT[i].test(s)) return VOICE_SOFT.length - i;
+  return 0;
+}
+/* 候选表 —— 「换个声音」按钮直接用它，所以顺序必须"越靠前越柔和"。
+   男声排到末尾而不是直接删掉：万一设备上只有男声，也总比完全没有语音好；
+   用户点「换个声音」时仍然能翻到它。 */
+function softVoices(){
+  if(!TTS_OK) return [];
+  let vs = [];
+  try{ vs = speechSynthesis.getVoices() || []; }catch(e){ return []; }
+  const zh = vs.filter(isZhVoice);
+  const pool = zh.length ? zh : vs;
+  return pool
+    .map((v, i)=>({ v, i }))
+    .sort((a, b)=>{
+      const am = VOICE_MALE.test((a.v.name || '') + ' ' + (a.v.voiceURI || '')) ? 1 : 0;
+      const bm = VOICE_MALE.test((b.v.name || '') + ' ' + (b.v.voiceURI || '')) ? 1 : 0;
+      return am - bm || softScore(b.v) - softScore(a.v) || a.i - b.i;
+    })
+    .map(x => x.v);
+}
+function pickSoftVoice(){
+  const list = softVoices();
+  if(!list.length) return null;
+  if(speechPref.name){
+    const hit = list.find(v => v.name === speechPref.name);
+    if(hit) return hit;
+  }
+  return list[0];
+}
+
+/* 坑点（真机实测踩过）：Android Chrome 的 getVoices() 是惰性异步加载的，
+   首次调用一律返回空数组，而且不报错、只是没声音。
+   必须监听 voiceschanged 事件，再配上两次定时重试兜底。 */
+function loadVoices(){
+  if(!TTS_OK) return;
+  const v = pickSoftVoice();
+  if(!v) return;                     // 还没加载出来，等 voiceschanged
+  voicesLoaded = true;
+  zhVoice = v;
+}
+if(TTS_OK){
+  loadVoices();
+  try{ speechSynthesis.onvoiceschanged = loadVoices; }catch(e){}
+  setTimeout(loadVoices, 300);
+  setTimeout(loadVoices, 1200);
+}
+
+let speaking = false;
+/* speechDirty：「刚取消过、还没重新出声」。见 speak() 的说明。
+   （原来这里还有一个 audioUnlocked 标志，只写不读，已删 —— 一个"看起来在记录
+     状态"的死变量比没有更糟：读代码的人会以为某处依赖它。） */
+let speechDirty = false;
+
+function doSpeak(text){
+  try{
+    /* 从后台切回前台、或被系统接管的 Chrome 会停在 paused 状态，
+       此时再 speak() 不会发声也不报错，必须先 resume。 */
+    try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
+    const u = new SpeechSynthesisUtterance(String(text));
+    /* rate / pitch 取用户偏好（见 speechPref），默认即"温柔档"。
+       voice 每次都要重设：用户可能在「播报设置」里换过声音，
+       而 speak() 是复用的同一条路径，没有别的地方替它记这件事。 */
+    u.lang = 'zh-CN'; u.rate = speechPref.rate; u.pitch = speechPref.pitch; u.volume = 1;
+    if(zhVoice){ u.voice = zhVoice; u.lang = zhVoice.lang || 'zh-CN'; }
+    u.onstart = ()=>{ speaking = true; clearVoiceAlarm(); };
+    u.onend   = ()=> speaking = false;
+    /* 原来这里只改一个状态位：引擎报 voice-unavailable / not-allowed /
+       audio-busy 时，屏幕、震动、语音全都没有任何反馈 ——
+       用户看到的就是"按了没反应"。现在把它变成一条可见、可读的说明。 */
+    u.onerror = (e)=>{ speaking = false; noteVoiceError(e && e.error); };
+    speechDirty = false;               // 已经重新起了一段播报
+    speechSynthesis.speak(u);
+  }catch(e){ console.warn('TTS 不可用', e); }
+}
+
+/* 播报；再点一次即打断（不等上一句念完）。
+ *
+ * 这里有一处很容易写错、且错得很隐蔽的地方：**cancel() 紧跟 speak()
+ * 处在同一个任务里时，Chrome 会偶发丢弃新的 utterance** —— 不抛错、就是不出声。
+ * 所以只要"刚刚取消过"或"正在播报被打断"，就必须让出一拍（80ms）再说话。
+ *
+ * 唯一不能延时的是**首次解锁**：浏览器只认"在用户手势任务内"的那次调用，
+ * 让出 80ms 就脱离手势，音频解锁会失败——整个应用从此没有语音。
+ * 用一个 speechDirty 标记把这两种情况分开，而不是无脑全延时：
+ * 无脑延时会让每次触摸探索都晚 80ms 出声，而"手指划过就念名字"
+ * 是这套交互的立身之本，不该白等。 */
+/* lastSpeech：最近一次主动播报的内容。
+   视障用户"一次没听清"是常态（环境嘈杂、注意力被路况打断），
+   原实现没有任何重听入口，只能把整个流程重走一遍。
+   这里记下文本，供结果区轻触重听。 */
+let lastSpeech = '';
+
+/* 上一次失败的动作。失败后轻触结果区即可重试，不必重新在屏幕上摸索到那个按钮。 */
+let pendingRetry = null;
+
+/* 紧急长按刚刚已经触发过一次，松手时不要再执行"当前聚焦项"
+   （否则一次长按会发出两个动作：先呼叫，紧接着又执行一遍别的功能）。 */
+let suppressNextRun = false;
+
+/* 顺手修掉的一个真 bug：lastSpeech 原来**任何** speak() 都会写。
+   而触摸探索每碰一个按钮就会 announce(label) = speak(名字)，
+   于是"结果区轻触重听"重播的其实是**最后一次摸到的按钮名字**，
+   而不是上一次的识别结果 —— 用户想重听"12点方向5步有障碍"，
+   听到的却是"呼叫人工志愿者"。这条路径此前没有任何断言覆盖。
+   现在只有**业务结果**才写 lastSpeech，界面提示语一律 remember:false。 */
+function speak(text, remember){
+  if(!text || !TTS_OK) return;
+  if(remember !== false) lastSpeech = String(text);
+  markRetap();
+  const needDelay = speechDirty || speaking;
+  try{ speechSynthesis.cancel(); }catch(e){}
+  if(needDelay){
+    setTimeout(()=>doSpeak(text), 80);
+  }else{
+    doSpeak(text);
+  }
+}
+function stopSpeak(){
+  try{ speechSynthesis.cancel(); }catch(e){}
+  speaking = false;
+  speechDirty = true;      // 记下"刚取消过"，下一次 speak 才知道要让出一拍
+}
+
+/* ================================================================
+   语音出声实测（verifySpeech）—— 只回答一个问题：**到底有没有发出声音**
+
+   为什么 TTS_OK 这个判断不够用：
+   TTS_OK 只证明"两个构造函数存在"。而在手机上，存在 ≠ 出声。
+   至少三种情况会让 speak() 静默失败、连 onerror 都不给：
+     ① 系统没装中文语音引擎（国产 ROM 上很常见）
+     ② 媒体音量被调到 0，或开着静音
+     ③ 内核把语音接口实现成空壳（部分手机自带浏览器）
+   而语音是本产品**唯一**的输出通道：静默失败 = 这个产品对用户不存在。
+   用户不会知道"是手机的问题"，只会得出"这个软件是坏的"。
+
+   判据只用**事件**，不做任何推测：
+   · 任何一句 utterance 真的触发了 onstart → 引擎活着，ttsHeard 永不复位；
+   · 解锁后给足时间仍没有任何一句话开始出声，才提示。
+
+   代价是可能误报（老设备首句起音慢）。而误报会在 onstart 里立刻被撤销
+   （clearVoiceAlarm），所以最坏情况只是屏幕上多出一段提示文字，
+   而不是"明明有声却告诉用户没声"。误报可自愈，静默不可自愈。
+   ================================================================ */
+const VOICE_PROBE_MS = 3600;   // 解锁到实测的等待：足够引导那句念完前半段
+let ttsHeard = false;          // 真的出过声
+let ttsProbed = false;         // 只实测一次：反复弹横幅和反复误触一样糟
+let ttsErrCode = '';           // 最近一次非正常错误码
+let voiceBarEl = null, voiceBarBound = false;
+const vbEl = ()=> voiceBarEl || (voiceBarEl = document.getElementById('voiceBar'));
+
+/* 排查顺序是刻意的：从"用户 5 秒能改的"到"要动系统设置的"。
+   把"装一个语音引擎"写在第一条，用户会直接放弃。 */
+const VOICE_FIX_STEPS =
+    '<span>按这个顺序试：① 按手机侧面的音量键，把<strong>媒体音量</strong>调起来；'
+  + '② 关掉静音和勿扰；'
+  + '③ 换 Chrome 或 Safari 打开（微信里点开的链接请先"在浏览器中打开"）；'
+  + '④ 装一个中文语音引擎：设置 → 无障碍 → 文字转语音。</span>';
+
+/* 把刚才那个错误码一起带去自检页。
+   这样用户不用复述"它刚才说了什么"，自检页也能直接对着错误码给结论。
+   ttsErrCode 原本只写不读，是个死变量 —— 现在它终于有了用处。 */
+function voiceCheckUrl(){
+  return 'voice_check.html' + (ttsErrCode ? '?err=' + encodeURIComponent(ttsErrCode) : '');
+}
+
+function showVoiceBar(title, why){
+  const el = vbEl();
+  if(!el) return;
+  el.innerHTML = '<b>' + title + '</b>' + why + VOICE_FIX_STEPS
+    + '<a href="' + voiceCheckUrl() + '">打开语音自检（看看这台手机到底缺什么）</a>';
+  el.style.display = '';
+  /* 横幅自己也要"摸着能念出来"，否则对全盲用户它是一片死区。
+     注册成触摸目标还有第二个作用：压掉兜底的"这里是空白区域" ——
+     那条提示是我自己造的噪音，用户点横幅时听到它只会更糊涂。
+
+     刻意不设 opts.nav：它不是功能列表里的一项，混进顺序导航会把
+     "第 N 项"的项数打乱，而项数变化会重报总数（见 focusSpeech）。
+     抬手直接打开自检页 —— 与全站"摸着报名字、抬手打开"一致。 */
+  if(!voiceBarBound){
+    voiceBarBound = true;
+    try{
+      bindAnnounceOnly(el, '语音故障提示。抬手指打开语音自检', ()=>{
+        location.href = voiceCheckUrl();
+      });
+    }catch(e){}
+  }
+}
+function hideVoiceBar(){
+  const el = vbEl();
+  if(el){ el.style.display = 'none'; el.innerHTML = ''; }
+}
+/* 只要真的出过声就把警报撤掉 —— 误报在这里自愈。 */
+function clearVoiceAlarm(){ ttsHeard = true; hideVoiceBar(); }
+
+/* 引擎自己报错时不能再装没事。
+   interrupted / canceled 必须放过：我们每说一句前都会 cancel 上一句，
+   那两个码是**我们自己**造成的。把它们当故障，横幅会常年挂在屏幕上，
+   最后谁都不再看它 —— 一条永远亮着的警告等于没有警告。 */
+function noteVoiceError(code){
+  const c = String(code || '');
+  if(!c || c === 'interrupted' || c === 'canceled') return;
+  ttsErrCode = c;
+  const why = /voice|language/i.test(c) ? '<span>系统里没有可用的中文语音。</span>'
+            : /not-allowed/i.test(c)    ? '<span>浏览器拒绝了播报请求（需要先在屏幕上摸一下）。</span>'
+            : /audio|hardware/i.test(c) ? '<span>音频通道被别的应用占用，或音频硬件不可用。</span>'
+            : '<span>系统语音引擎报错：' + esc(c) + '。</span>';
+  showVoiceBar('语音没有出声', why);
+}
+
+function verifySpeech(){
+  if(ttsProbed) return;
+  ttsProbed = true;
+  if(!TTS_OK){
+    showVoiceBar('这个浏览器不能语音播报',
+      '<span>微信内置浏览器、部分手机自带浏览器就是这样，'
+    + '它们的语音接口根本不存在。本应用靠语音工作，'
+    + '所以在这些浏览器里它基本上用不了。</span>');
+    return;
+  }
+  if(ttsHeard) return;      // 已经听到过声音，什么都不用说
+  showVoiceBar('没有听到任何声音',
+    '<span>刚才那几句播报一句都没响，这台设备的语音引擎可能没有工作。</span>');
+}
+
+/* 手指碰到按钮时只报名字，不念结果 —— 对应屏幕阅读器的"探索"行为。
+   必须 remember:false：按钮名不是"结果"，不该覆盖可重听的内容。 */
+function announce(label){ if(label) speak(label, false); }
+
+/* ================================================================
+   第 3 层：触摸探索（F13）
+   核心交互规则：手指碰到按钮 -> 报名字；手指抬起 -> 才执行。
+   手指滑出按钮即取消，给用户一个约 300ms 的反悔窗口。
+   这与"先听完 5 个选项再回答"的语音菜单相比，
+   把串行的 8 秒等待压成并行的 1.5 秒定位（更快、也不要求用户记顺序）。
+
+   分派为什么放在 document 上，而不是每个按钮各自监听 touchmove：
+   touchmove 的事件目标是 touchstart 触发的**那个**元素，所以把监听
+   写在各元素上，只可能感知到"滑出了我自己"，永远感知不到"滑进了别人"——
+   而"手指滑到哪个按钮就报哪个"才是读屏软件的标准探索行为。
+   实际后果是：用户手指从一个按钮滑到相邻按钮，听到的还是旧按钮的名字，
+   抬手执行的却是新按钮，两个通道给的信息互相矛盾。
+   ================================================================ */
+const TOUCH_TARGETS = [];        // 触摸探索注册表，供全局分派按落点判定
+
+/* 按触点坐标刷新所有可探索元素的状态；
+   setArmed 内部只在状态**变化**时才给反馈，所以按下与滑动可以共用这一条路径。
+
+   只认命中的第一个元素，不做"多命中"。否则一旦有两个元素在视觉上重叠，
+   抬手会同时触发两个动作——对视障用户既无法预期，也可能是破坏性的
+   （例如同时"退出流程"和"呼叫志愿者"）。 */
+/* ================================================================
+   滚动意图识别 —— 本项目最容易误触、也最难自查的一处
+   场景：用户想往下翻页看看还有什么功能，手指恰好按在某个按钮上起手，
+   一路滑上去。滑出按钮时 armed 会变 false，看似安全；但只要手指
+   **留在按钮范围内**滑（按钮高 64px，很容易），抬手时 armed 仍为 true，
+   于是"我想翻页"被执行成了"我要拍照 / 呼叫志愿者"。
+   而且滚动过程中每滑过一个按钮就播报一次名字，TTS 队列会堆积成一串
+   毫无意义的名词，把用户真正在听的那句话顶掉。
+
+   判据为什么用 scroll 事件而不是位移阈值：
+   位移阈值分不清"滚动页面"和"读屏式探索滑动"（后者位移也很大，
+   但页面不动）。真滚动一定伴随 scroll 事件，探索式滑动则不会。
+   ================================================================ */
+let pageScrolling = false;
+document.addEventListener('scroll', ()=>{ pageScrolling = true; }, {passive:true});
+
+/* 本次触摸是否"移动过"。
+   用途有两个，都跟"按不准"直接相关：
+   ① 区分「轻触」（几乎没动）与「拖动探索」——只有轻触落在空白处才提示，
+      拖动过程中手指频繁经过空白，逐处播报会变成噪音；
+   ② 作为"这一下是故意点，还是滑过"的判据。
+   阈值 16px：比系统判定 tap 的滑差略宽，避免手抖被误判成拖动。 */
+const GESTURE_MOVE_PX = 16;
+let gestureMoved = false, gStartX = 0, gStartY = 0;
+
+/* 是否存在一次完整的触摸（touchstart … touchend）。
+   判"按偏了"必须要求这一点：只有 touchend 而没有 touchstart 时，
+   我们根本不知道用户是从哪里按下去的 —— 那不是"按偏"，
+   而是"这次触摸不是从我这里开始的"（真实场景里最常见的就是启动闸门那一层）。
+   没有这个标志时，点一下闸门会额外喊一句"这里是空白区域"，
+   而那时用户正准备开始使用，这句话只会造成困惑。 */
+let gestureActive = false;
+
+/* 最近一次坐标分派命中的元素。
+   空白提示需要它：命中了元素说明用户按到了东西（元素自己会回应），
+   没命中才说明"按偏了"——这两种情况必须分开，否则每次正常操作都会多一句废话。 */
+let lastHitTarget = null;
+
+function dispatchTouchPoint(clientX, clientY){
+  /* 页面正在滚动：一律不报名字、不武装。
+     静默是这里唯一正确的行为——用户在翻页，不想听任何点名。 */
+  if(pageScrolling){
+    for(const t of TOUCH_TARGETS) t.setArmed(false);
+    lastHitTarget = null;
+    return null;
+  }
+  let hit = null;
+  for(const t of TOUCH_TARGETS){
+    const r = t.el.getBoundingClientRect();
+    const visible = !!(r.width || r.height);     // 隐藏元素（如未展开的 SOP 区）跳过
+    const inside = !hit && visible
+                && clientX >= r.left && clientX <= r.right
+                && clientY >= r.top  && clientY <= r.bottom;
+    if(inside) hit = t;
+    t.setArmed(inside);
+  }
+  lastHitTarget = hit;
+  return hit;
+}
+document.addEventListener('touchmove', (e)=>{
+  const t = e.touches && e.touches[0];
+  if(!t) return;
+  if(!gestureMoved
+     && Math.abs(t.clientX - gStartX) + Math.abs(t.clientY - gStartY) > GESTURE_MOVE_PX){
+    gestureMoved = true;
+  }
+  dispatchTouchPoint(t.clientX, t.clientY);
+}, {passive:true});
+/* 手指刚落下的那一下也要走一遍分派：一是清掉上一位手指可能残留在
+   别的按钮上的"已就绪"状态（否则会出现"没碰它却执行了"），
+   二是当前元素此时已是 armed，setArmed 会直接返回，不会重复报名字。
+
+   同时把 pageScrolling 复位：一次新的触摸就是一次新的意图，
+   上一次的滚动状态不能带进来（否则新触摸会被误判成"还在翻页"而静默）。 */
+document.addEventListener('touchstart', (e)=>{
+  pageScrolling = false;
+  gestureMoved = false;
+  gestureActive = true;
+  const t = e.touches && e.touches[0];
+  if(t){ gStartX = t.clientX; gStartY = t.clientY; dispatchTouchPoint(t.clientX, t.clientY); }
+}, {passive:true});
+
+/* 空白处轻触的兜底提示 —— "按不准"这个问题的另一半答案。
+   看不见屏幕的用户按偏时，原来的实现是**完全静默**的：
+   "我没按上"和"应用卡死了"这两种解释都成立，用户只能反复乱按。
+   现在按偏会被明确告知，并被指到"底部那三个固定键"这条不依赖精度的出路上去。
+
+   三个前提缺一不可，否则会变成新的噪音源：
+   · 轻触（几乎没移动）—— 拖动探索时手指经常经过空白，逐处播报会顶掉用户在听的内容；
+   · 页面没滚动 —— 翻页时抬手必然落在某处，不该被当成"按偏了"；
+   · 没有命中任何元素 —— 命中了说明用户按到了东西，元素自己会回应。 */
+const BLANK_HINT_MS = 6000;
+let lastBlankAt = 0;
+
+function blankFeedback(){
+  const now = Date.now();
+  if(now - lastBlankAt < BLANK_HINT_MS) return;   // 节流：连着乱按不会刷出一串播报
+  lastBlankAt = now;
+  haptic(HAPTIC_CANCEL);
+  if(focusTarget){
+    speak('这里是空白。当前选中「' + focusTarget.label + '」，按底部中间的「执行」键确认', false);
+  }else{
+    speak('这里是空白区域。屏幕底部有三个固定的键：上一个、执行、下一个', false);
+  }
+}
+
+document.addEventListener('touchend', ()=>{
+  const wasActive = gestureActive;
+  gestureActive = false;
+  if(!wasActive) return;                  // 不是一次完整触摸，不判"按偏"
+  if(!gateOpened) return;                 // 闸门还盖着整屏，这一下是"打开应用"
+  if(pageScrolling || gestureMoved) return;
+  if(lastHitTarget) return;
+  blankFeedback();
+}, {passive:true});
+
+function bindAccessible(el, label, action, opts){
+  if(!el) return;
+  opts = opts || {};
+  el.setAttribute('aria-label', label);
+  /* chip 这类 <span role="button"> 必须补 tabindex 才能被键盘聚焦，
+     否则"键盘可操作"只对 <button> 成立，小选择项实际是键盘不可达的。 */
+  if(el.getAttribute('role') === 'button' && !el.hasAttribute('tabindex')){
+    el.setAttribute('tabindex', '0');
+  }
+  let armed = false;
+  /* 时间戳必须按元素记录，不能做成全局变量：
+     否则触摸过一个按钮后的 900ms 内，点其他按钮会被误判为"补发的 click"而全部吞掉
+     （触屏笔记本上会真实复现：手指碰一下屏幕，再拿鼠标点别的按钮就没反应）。 */
+  let lastTouch = 0;
+  /* navArmed：这一次的"已武装"是**顺序导航**设上的，不是手指摸出来的。
+     两者必须区分开 —— 导航设上只表示"当前选中的是它"，
+     而用户随后用手指摸上来时，仍然需要听到名字：
+     否则他按了「下一个」之后想用手确认位置，摸到的是一片安静，
+     只能得出"我是不是没摸到"的结论。手指消费过一次就清掉标记。 */
+  let navArmed = false;
+  /* 执行锁与确认态：见 execute() 的说明 */
+  let busy = false, asking = false, askTimer = null;
+  const setRing = (on)=> el.classList.toggle('focusring', on);
+
+  /* armed 状态的唯一入口：变化时才高亮 + 播报，
+     保证"滑出后滑回"会重新报名字，而"停在原地"不会反复念。 */
+  const setArmed = (on, feedback)=>{
+    const changed = armed !== on;
+    if(!changed && !(on && navArmed)) return;
+    if(on) navArmed = false;
+    armed = on;
+    if(changed) setRing(on);
+    if(on && feedback !== false){ haptic(HAPTIC_TOUCH); announce(label); }
+  };
+
+  /* 注册进触摸探索表。除 el / setArmed 外再带三个字段：
+     · label —— 顺序导航要播报"第 N 项，共 M 项，<名字>"，必须拿得到名字；
+     · run   —— 导航栏的「执行」键要能替用户触发这个动作；
+     · nav   —— 是否参与顺序遍历。演示横幅、结果区这类"只能听、不该被当作
+                 功能执行"的区域要排除，否则用户遍历到第 4 项听到"演示模式提示"，
+                 按「执行」却发现什么也没发生。 */
+  TOUCH_TARGETS.push({ el, label, setArmed,
+                       markNavArmed: ()=>{ navArmed = true; },
+                       nav: opts.nav !== false,
+                       /* 顺序导航里的位置**不需要在这里指定** ——
+                          统一按页面的文档顺序（从上到下）算，见 navigableTargets。
+                          好处是"页面长什么样，播报就是什么顺序"，不会出现两套秩序。 */
+                       run: ()=>execute(),
+                       /* runForce：跳过二次确认的版本。只给"紧急长按"用 ——
+                          见导航栏「执行」键的长按逻辑。 */
+                       runForce: ()=>execute(true) });
+
+  const cancelAsk = (sayCanceled)=>{
+    if(!asking) return;
+    clearTimeout(askTimer); askTimer = null;
+    asking = false;
+    el.classList.remove('ask');
+    if(sayCanceled){ haptic(HAPTIC_CANCEL); speak('已取消', false); }
+  };
+
+  /* ================================================================
+     所有执行路径的唯一入口。两件事必须收在这里，不能散在各事件处理里。
+     ================================================================
+     ① 防重复提交。
+        触摸探索是"抬手即执行"，而一次执行要几秒（拍照 → 上传 → 大模型 → 播报）。
+        这几秒里用户会怀疑"是不是没按上"而反复触摸，原实现会并发发出多个请求：
+        连拍多张图、SOP 并发推进直接跳步、一次呼叫生成多张工单。
+        第二次触摸现在变成一句"正在处理，请稍等"，而不是又一次请求。
+
+     ② 高危动作二次确认（opts.confirm）。
+        "呼叫人工志愿者"会真的把求助派出去，"退出流程"会清空全部进度。
+        这两个动作误触的代价远高于多按一下。
+        第一次触摸不退化成"什么都没发生"，而是明确告知"再点一次确认"，
+        5 秒内不确认即自动撤销 —— 不留"已上膛但用户忘了"的悬挂状态，
+        否则用户过一会儿再来按，以为在选功能，实际把求助发出去了。 */
+  const execute = async (force)=>{
+    if(force !== true && suppressNextRun){ suppressNextRun = false; return; }
+    if(busy){ haptic(HAPTIC_TOUCH); speak('正在处理，请稍等', false); return; }
+    if(opts.confirm && force !== true){
+      if(!asking){
+        asking = true; el.classList.add('ask');
+        haptic(HAPTIC_CANCEL);
+        speak(opts.confirm, false);
+        askTimer = setTimeout(()=>{
+          asking = false; el.classList.remove('ask');
+          haptic(HAPTIC_CANCEL); speak('已取消', false);
+        }, 5000);
+        return;
+      }
+      cancelAsk(false);
+    }
+    haptic(HAPTIC_TAP);
+    busy = true; el.classList.add('busy');
+    pendingRetry = null;                    // 新动作开始，上一次的"可重试"作废
+    try{ await action(); }
+    catch(e){
+      /* 失败必须留下"再来一次"的路。
+         原来失败后只能听着"连接失败"，然后重新在屏幕上摸索到那个按钮再按一遍 ——
+         而失败往往发生在信号差的户外，正是用户最不方便重新定位的时候。
+
+         注意这里存的是**重新进入 execute() 的函数**，不是 action 本身：
+         直接调 action 会绕过执行锁与这里的错误处理，重试失败时会抛出
+         未捕获的 Promise 异常（在浏览器里表现为控制台报错、界面再无反应），
+         等于把"可重试"做成了"重试一次就彻底坏掉"。 */
+      pendingRetry = ()=>execute();
+    }
+    finally{ busy = false; el.classList.remove('busy'); }
+  };
+
+  el.addEventListener('touchstart', ()=>{
+    lastTouch = Date.now();
+    navArmed = false;              // 手指已经碰上了，导航那次"已武装"到此为止
+    armed = true; setRing(true); haptic(HAPTIC_TOUCH); announce(label);
+  }, {passive:true});
+
+  el.addEventListener('touchend', (e)=>{
+    lastTouch = Date.now();
+    setRing(false);
+    const wasArmed = armed;
+    armed = false;
+    if(!wasArmed) return;                           // 手指已滑出 = 取消，不执行
+    /* 本次触摸期间页面滚动过 = 用户想翻页，不是想按这个按钮。
+       不回"取消"两短震：用户在翻页，不需要被告知"你取消了什么"。 */
+    if(pageScrolling){ haptic(HAPTIC_CANCEL); return; }
+    if(e.cancelable) e.preventDefault();            // 阻止浏览器补发 click，避免执行两次
+    execute();
+  }, {passive:false});
+
+  el.addEventListener('touchcancel', ()=>{
+    armed = false; setRing(false);
+    /* 被系统打断（来电、手势返回）时，把"待确认"也一并撤掉，
+       否则用户回来时会看到一个还在等确认的按钮，却不知道它在等什么。 */
+    cancelAsk(false);
+  });
+
+  /* 桌面端（答辩用笔记本演示）走 click；本元素上刚触摸过的要忽略，否则会重复执行 */
+  el.addEventListener('click', ()=>{
+    if(Date.now() - lastTouch < 900) return;
+    execute();
+  });
+
+  /* 键盘：给志愿者、评委、开发调试用 */
+  el.addEventListener('keydown', (e)=>{
+    if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); execute(); }
+  });
+}
+
+/* ================================================================
+   顺序导航（固定底栏三键）—— "按钮按不准"的正面回答
+
+   先把问题说清楚：视障用户**不可能**保证按到某一个按钮，因为看不见它。
+   触摸探索（摸到就报名字）缓解了这个问题，但没有解决：
+     · 目标分散在几屏高度里，摸到想要的那个要试很多次；
+     · 摸错了抬手就执行，中间没有"我先确认一下"的机会；
+     · 页面滚动后位置全变，刚建立的空间记忆一次性作废。
+
+   对策不是把按钮继续做大（72px 已接近上限，再大屏幕就放不下几个），
+   而是**把分散目标压缩成固定位置目标**：
+     · 位置固定 —— 固定在屏幕最下沿，盲用户可以用"摸到屏幕下边缘再往上一点"
+       这个可靠的定位策略找到它，不需要在页面里逐个试探；
+     · 数量固定 —— 只有 3 个，不存在"摸到隔壁功能"的问题；
+     · 顺序可遍历 —— 配合"第 N 项，共 M 项"，用户能建立完整心智地图，
+       而且知道有没有漏掉（这是触摸探索永远给不了的信息）。
+
+   注意这里**没有**改变原有的"摸到按钮抬手即执行"快速通道 ——
+   低视力用户和熟练用户仍然可以直奔目标，一条路都不堵。
+   ================================================================ */
+let focusTarget = null;
+
+/* ================================================================
+   顺序导航的播报词：只在"需要的时候"给总数
+
+   原来每移动一格都念「第 5 项，共 11 项」。中文 TTS 下这 10 个字要念约 2 秒，
+   而"共 11 项"是一个**一次性**信息 —— 听完第一遍就掌握了，
+   后面 10 次全是冗余：连按到底要多听 20 秒，而且每次都在盖住真正想听的名字。
+   （用户实测反馈的原话就是"不要每次都播报共 11 项了"。）
+
+   改成三层：
+     · 首次进入导航 → 「共 11 项。第 1 项：拍照看看周围」
+                      建立全局概念，整轮只说这一次
+     · 常规移动     → 「第 3 项：拍照读文字」（不带总数）
+     · 走到边界     → 用**更有用的信息**顶替：
+                      末尾「这是最后一项」、绕回开头「回到第 1 项」、反向绕「绕到最后一项」
+                      边界比总数更能防"以为后面还有、一直按下去"。
+
+   标点也顺手改了：原来"第 5 项，共 11 项。拍照读文字"里那个句号
+   会让 TTS 停足一拍，像两句话；现在统一用冒号，一口气读完。
+
+   ----------------------------------------------------------------
+   试过但**否决**的一个方案，记下来免得下次再走一遍：
+   曾想"快速连按时连序号也省，只念名字"（用与上一次移动的时间间隔判断，
+   间隔 <1s 视为"在扫"，不念序号）。否决理由是可预测性 ——
+   它会让**同一个键在不同节奏下说不同结构的话**，用户无法预知按下去
+   会听到什么。对视障用户来说，"按下去会听到什么"的确定性本身就是安全感；
+   而序号只有 3 个字（约 0.7 秒），并不是真正的浪费。
+   真正该砍的是那个一次性的总数 —— 砍它不需要任何条件判断。
+   ---------------------------------------------------------------- */
+let navToldTotal = false, navCount = 0;
+
+function focusSpeech(t, i, total, wrap){
+  /* 列表长度变了（SOP 控制区出现/消失）要重新报一次总数 ——
+     否则"共 11 项"会被继续用在一个已经变成 14 项的列表上，成为**错误信息**。 */
+  if(total !== navCount){ navCount = total; navToldTotal = false; }
+  const first = !navToldTotal;
+  navToldTotal = true;
+  const head = '第 ' + (i + 1) + ' 项';
+  /* 注意 first 也要带上真实序号：用户可能第一次就按「上一个」从末尾开始，
+     写成"第 1 项"就是错的。 */
+  if(first)              return '共 ' + total + ' 项。' + head + '：' + t.label;
+  if(wrap === 'toStart') return '回到第 1 项：' + t.label;
+  if(wrap === 'toEnd')   return '绕到最后一项，' + head + '：' + t.label;
+  if(i === total - 1)    return head + '：' + t.label + '。这是最后一项';
+  return head + '：' + t.label;
+}
+
+/* 可遍历的项：排除导航键自己、排除"只能听不能执行"的区域、排除隐藏元素。
+   必须排除隐藏项（如未开始的 SOP 控制区），否则用户按「下一个」会听到
+   "第 5 项：拍照确认继续下一步"，然后按「执行」却毫无反应。
+
+   顺序 = **页面从上到下**，不另排。用户听到的第 N 项，就是他手指从上往下
+   摸到的第 N 个东西；顺序导航与手指触摸探索给同一个答案，两条通道不互相拆台。
+
+   （曾经按"使用频率 + 紧急度"排过一版：把常用项和紧急项提前。撤掉的原因有两条：
+     ① 按「下一个」时播报会在页面上反复上下跳，低视力用户看着选中框乱窜，
+        全盲用户也没法用"我摸到哪儿了"来校准"这是第几项"；
+     ② 手写的序号表一定会和版式脱节 —— 改了页面忘了改表，顺序就悄悄错掉，
+        而且没有任何迹象能看出来。紧急求助的可达性改由底栏「执行」键的长按承担，
+     它不依赖顺序（见 lpBegin），比"排到第 2 位"更可靠。） */
+function navigableTargets(){
+  return TOUCH_TARGETS
+    .filter(t=>{
+      if(t.nav === false) return false;
+      if(t.el.closest && t.el.closest('#nav')) return false;
+      const r = t.el.getBoundingClientRect();
+      return !!(r.width || r.height);
+    })
+    .sort(domOrder);
+}
+
+/* 文档顺序比较 = "从上到下、从左到右"的阅读顺序。
+   用 compareDocumentPosition 而不是手写序号表：DOM 里谁在前谁在后是**事实**，
+   不需要维护，也不可能和版式脱节。
+   返回值 0（非祖先关系之外的未知情形）时保持原相对次序 ——
+   Array.prototype.sort 在现代引擎里是稳定排序，退化为注册顺序。 */
+const DOC_POSITION_PRECEDING = 2, DOC_POSITION_FOLLOWING = 4;
+function domOrder(a, b){
+  const A = a.el, B = b.el;
+  if(!A || !B || A === B) return 0;
+  try{
+    const rel = A.compareDocumentPosition(B);
+    if(rel & DOC_POSITION_FOLLOWING) return -1;   // B 在 A 之后 → A 先
+    if(rel & DOC_POSITION_PRECEDING) return 1;
+  }catch(e){}
+  return 0;
+}
+
+const runBtn = $('#btnRun');
+function refreshRunLabel(){
+  if(!runBtn) return;
+  if(!focusTarget){
+    runBtn.setAttribute('aria-label', '执行当前选中的功能。还没有选中，请先按「下一个」');
+    return;
+  }
+  const list = navigableTargets();
+  const i = list.indexOf(focusTarget);
+  /* 焦点停在「呼叫人工志愿者」时提醒一句"长按可以直接呼叫"。
+     这个手势其实**不需要**焦点停在求助项上（见 lpBegin），
+     但用户正好走到这一项时，是他最容易把"求助"和"长按"联系起来的时刻 ——
+     视障用户没法"看见"一个隐含手势，只做不说等于没做。
+     另外它还有一层保险含义：让用户知道在任何位置长按都行。 */
+  const lp = (focusTarget.el && focusTarget.el.id === 'btnHelp')
+    ? '。长按一秒可以直接呼叫，不需要再确认' : '';
+  /* 「按住说话」选中时要说明"按住"这个动作 ——
+     它的操作方式和别的项不一样（别的是点一下，它是按住不放）。
+     不说清楚，用户点一下没反应就会以为它坏了。 */
+  const vp = (focusTarget.el && focusTarget.el.id === 'btnVoice')
+    ? '。按住不放，说完再抬手指' : '';
+  /* 这里**只报"第几项"，不报总数**。总数是一次性信息，
+     改由 focusSpeech 在第一次进入导航时念一遍（见那里的说明）；
+     而可访问名称每次移动都会变，读屏会跟着念，
+     每次都带上"共 14 项"就是用户反感的那种啰嗦。 */
+  runBtn.setAttribute('aria-label', '执行：' + focusTarget.label
+    + (i >= 0 ? '（第 ' + (i+1) + ' 项）' : '') + lp + vp);
+}
+
+/* ================================================================
+   紧急长按：无论焦点停在哪儿，长按「执行」都直接呼叫人工志愿者
+
+   为什么需要：原来的求助要三步 —— 在屏幕里找到「呼叫人工志愿者」按钮、
+   摸到它、再确认一次。这三步对日常使用是保护，对**紧急情况**却是反的：
+   摔倒、被撞、迷路时，用户最缺的是时间和手上稳定的操作能力，
+   而"在屏幕上找一个按钮"恰恰是视障用户最不擅长的动作。
+
+   为什么不直接去掉二次确认：那会让日常误触真的把求助发出去。
+   改用**长按**：故意按住 1.5 秒是有明确意图的动作，误触几乎不可能；
+   而且长按过程有震动回应，用户能感到"快触发了"，中途松手即取消。
+
+   为什么**不要求焦点先停在求助项上**（原来是要求的）：
+   那等于把"紧急"和"按对若干次「下一个」"绑在一起。顺序导航改成
+   页面从上到下的顺序之后，求助项落在第 10 位左右 —— 紧急时按十下，
+   这条快捷通道就名存实亡了。
+   现在长按不依赖任何导航状态：位置的固定性本身就是它的可靠性来源。
+   这也是固定底栏这个设计最该兑现的一条承诺。
+   ================================================================ */
+const HELP_LONGPRESS_MS = 1500;
+let lpTimer = null;
+
+function voiceFocused(){
+  return !!(focusTarget && focusTarget.el && focusTarget.el.id === 'btnVoice');
+}
+
+function lpBegin(){
+  if(lpTimer) return;
+  haptic(HAPTIC_TOUCH);
+  /* 焦点停在「按住说话」上时，「执行」键就是录音键。
+     这是两条通道的接合点：录音本来必须"按住不放"，而按住一个
+     **位置固定**的键正好是视障用户最擅长的事 ——
+     不需要去页面里找到「按住说话」那个按钮，也不需要按准它。
+     它排在紧急呼叫前面：录音这条路径是用户主动选的（焦点是他自己移过去的），
+     意图比"手指搁在键上"明确得多。 */
+  if(voiceFocused()){ vbBeginHold(); return; }
+  lpTimer = setTimeout(()=>{
+    lpTimer = null;
+    const t = TOUCH_TARGETS.find(x => x.el && x.el.id === 'btnHelp');
+    haptic(HAPTIC_READY);                       // 就绪双震 = 已经帮你发出去了
+    speak('正在直接呼叫人工志愿者', false);
+    if(t && t.runForce) t.runForce();
+    suppressNextRun = true;                     // 松手时不要再执行一遍聚焦项
+  }, HELP_LONGPRESS_MS);
+}
+
+function lpEnd(){
+  /* 松手时若正处在"按住录音"状态，先把录音停掉 ——
+     缺了这一步，用户按住「执行」说完话松手，录音会一直进行下去，
+     最后只能靠系统的录音轨中断或刷新页面才能停。 */
+  if(vbHold){ vbStopHold(); endRec(); return; }
+  if(!lpTimer) return;
+  clearTimeout(lpTimer); lpTimer = null;
+  haptic(HAPTIC_CANCEL);                        // 两短震 = 长按已取消
+}
+
+runBtn.addEventListener('pointerdown', lpBegin);
+window.addEventListener('pointerup', lpEnd);
+window.addEventListener('pointercancel', lpEnd);
+
+function setFocus(t, wrap){
+  const list = navigableTargets();
+  const i = list.indexOf(t);
+  if(i < 0) return;
+  if(focusTarget && focusTarget !== t) focusTarget.setArmed(false);
+  focusTarget = t;
+  t.setArmed(true, false);          // 高亮（低视力可见），名字由下面统一播报
+  /* 告诉这个元素"这次是导航选上的"：用户接下来若用手指摸它，
+     仍然要报一次名字（见各 setArmed 里 navArmed 的说明）。 */
+  if(t.markNavArmed) t.markNavArmed();
+  /* 把目标滚进视野：否则全盲用户按了「下一个」，听到的项目在屏幕外，
+     而低视力用户完全看不到它被选中了。scrollIntoView 在 jsdom 里不存在，要挡一下。 */
+  try{ if(t.el.scrollIntoView) t.el.scrollIntoView({block:'center'}); }catch(e){}
+  haptic(HAPTIC_TOUCH);
+  speak(focusSpeech(t, i, list.length, wrap), false);
+  refreshRunLabel();
+}
+
+function focusStep(delta){
+  const list = navigableTargets();
+  if(!list.length){ haptic(HAPTIC_ERR); speak('现在没有可以选的功能', false); return; }
+  const prev = focusTarget ? list.indexOf(focusTarget) : -1;
+  let i, wrap = null;
+  if(prev < 0){
+    i = delta > 0 ? 0 : list.length - 1;      // 还没选中：从头或从尾开始
+  }else{
+    i = ((prev + delta) % list.length + list.length) % list.length;
+    /* 绕回要单独说：用户听到"第 1 项"会以为按错了（明明刚才在最后一项），
+       而"回到第 1 项"直接告诉他这是绕圈，不需要退回去。 */
+    if(delta > 0 && prev === list.length - 1 && i === 0)      wrap = 'toStart';
+    else if(delta < 0 && prev === 0 && i === list.length - 1) wrap = 'toEnd';
+  }
+  setFocus(list[i], wrap);
+}
+
+/* 只报名字、不执行任何动作的区域（结果区、分组标题、输入框、演示横幅）。
+   它们不是按钮，但视障用户必须能摸到并知道"这里是什么、能做什么"——
+   发现不了的功能等于不存在。
+
+   label 允许传**函数**：进度条这类会变的内容，名字必须现算。
+   如果绑定时就把"第 1 步，共 6 步"写死，用户走到第 4 步时摸到它，
+   听到的还是第 1 步 —— 比不报更糟，因为它是"错误信息"而不是"没有信息"。
+
+   opts.nav=true 表示"它虽然是'只报名字'的绑定方式，但应该进顺序导航"。
+   为什么需要这个开关：「按住说话」就是这种情况 ——
+   它不能走 bindAccessible（那会给它挂上 touchstart/touchend，
+   在 touchend 里调 preventDefault 有取消后续 pointer 事件的风险，
+   而它的录音完全依赖 pointerdown/pointerup）。
+   但它又**必须**进导航：它是最重要的输入通道，
+   而"在整页里摸到一个特定按钮"恰恰是视障用户最不擅长的动作。 */
+function bindAnnounceOnly(el, label, onRun, opts){
+  if(!el) return;
+  const nameOf = ()=> (typeof label === 'function' ? String(label() || '') : label);
+  el.setAttribute('aria-label', nameOf());
+  let armed = false, navArmed = false;
+  const setArmed = (on, feedback)=>{
+    const changed = armed !== on;
+    if(!changed && !(on && navArmed)) return;
+    if(on) navArmed = false;
+    armed = on;
+    /* aria-label 同步刷新：读屏用户靠它，读的不是我们 speak 出来的那句 */
+    el.setAttribute('aria-label', nameOf());
+    el.classList.toggle('focusring', on);
+    if(on && feedback !== false){ haptic(HAPTIC_TOUCH); announce(nameOf()); }
+  };
+  TOUCH_TARGETS.push({ el, label, setArmed,
+                       markNavArmed: ()=>{ navArmed = true; },
+                       run: onRun || (()=>speak(nameOf())),
+                       nav: !!(opts && opts.nav === true) });
+}
+
+bindAccessible($('#btnNextItem'), '下一个功能', ()=> focusStep(1));
+bindAccessible($('#btnPrev'),     '上一个功能', ()=> focusStep(-1));
+bindAccessible(runBtn, '执行当前选中的功能', async ()=>{
+  if(!focusTarget){ haptic(HAPTIC_ERR); speak('还没有选中功能。请先按底部的「下一个」浏览', false); return; }
+  /* 焦点可能已经失效：SOP 走完之后「拍照确认」「已到达」会被隐藏，
+     而 focusTarget 还停在上面。此时按「执行」会去打开相机推进一个
+     已经结束的流程 —— 用户听到"正在处理"，却完全不知道自己触发了什么。
+     判据用 navigableTargets()（与选择时同一套），保证"能选中"与"能执行"一致。 */
+  if(!navigableTargets().includes(focusTarget)){
+    focusTarget = null; refreshRunLabel();
+    haptic(HAPTIC_ERR);
+    speak('刚才选中的功能已经不在了。请按底部的「下一个」重新选择', false);
+    return;
+  }
+  const t = focusTarget;
+  /* 「按住说话」是个例外：它的动作是"按住不放"，而这一下是"点"。
+     轻点在这里只该得到指引，不该开麦（否则会录进一段无意义的静音）。
+     判据用**按下的时长**：短于 300ms 是点、长于是按住 ——
+     按住的那次录音已经由 lpBegin 启动了，这里不能再插手。 */
+  if(t.el && t.el.id === 'btnVoice'){
+    if(Date.now() - vbHoldStart < VB_TAP_MAX_MS){
+      haptic(HAPTIC_TOUCH);
+      speak('按住不要松开，说完再抬手指', false);
+    }
+    return;
+  }
+  await t.run();
+});
+refreshRunLabel();
+
+/* 结果区：能听、能重听，但不该出现在"功能列表"里被「执行」。
+   独立于 #result 自己的 touchend（那个负责重听/重试），这里只提供"摸到就报名字"。
+
+   ⚠ 名字必须**现算**，因为这一个位置承担了两件事：
+     · 有结果时，轻触 = 重听上一次播报；
+     · 失败之后，轻触 = 重试上一次操作（失败进到这里，轻触去重播"连接失败"毫无价值）。
+   判据直接用 `pendingRetry`，不另立一个状态变量 —— 两套真理迟早会脱节。
+   为什么必须写在名字里：对看不见屏幕的用户，"同一个位置同一手势做两件事"
+   是纯粹的歧义，区别只写在 `.retap` 那行视觉小字里，他读不到。
+   名字说清是哪一种，用户才知道这一下会发生什么。 */
+bindAnnounceOnly($('#result'), ()=> pendingRetry
+  ? '结果区。上一次操作失败了，轻触可以重试'
+  : '结果区。轻触可以重听上一次的播报', ()=>{
+  if(lastSpeech) speak(lastSpeech);
+});
+
+/* 结果区轻触重听。
+   视障用户"一次没听清"是常态：环境嘈杂、注意力被路况打断、或自己刚才
+   摸了别的按钮把播报顶掉了。原实现没有任何重听入口，唯一办法是把整个
+   流程（可能是一次拍照 + 一次大模型调用）重走一遍。
+   刻意不把结果区纳入触摸探索：它装的是格式化 HTML，报名字会念出一整段长文本。 */
+/* 转义模型/ASR 返回的文本再插进结果区。
+   结果区是 innerHTML 渲染的，而模型输出是自由文本 —— 里面很容易出现
+   "<"（比如"距离<5 米"）、"&"这类字符，不转义就会被当成标签吞掉，
+   用户看到的是被截断的半句话；极端情况下还可能带进可执行标记。
+   我们自己写的那几段 HTML 照旧不转义。 */
+/* 引号也要转。目前所有调用点都落在**文本节点**位置，只转 & < > 是够用的；
+   但只要有人把 esc() 的结果拼进 HTML 属性（title="…" 之类），
+   少转一个引号就是一处注入。与其等那一刻再补，不如现在补全 ——
+   代价是两个 replace，换来"这个函数放哪都安全"。 */
+const esc = (s)=> String(s == null ? '' : s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+function markRetap(){ resultEl.classList.toggle('retap', !!lastSpeech); }
+resultEl.addEventListener('touchend', (e)=>{
+  if(pageScrolling) return;                   // 在翻页，不是在点重听
+  if(e.cancelable) e.preventDefault();        // 阻止补发 click，避免重播两遍
+  haptic(HAPTIC_TOUCH);
+  /* 失败之后，这一下更有价值的用途是"重试"，而不是重播那句"连接失败"。
+     两个意图不会打架：失败时本来就没有可重听的结果。 */
+  if(pendingRetry){
+    const f = pendingRetry; pendingRetry = null;
+    speak('正在重试', false);
+    setTimeout(f, 200);
+    return;
+  }
+  if(!lastSpeech) return;
+  speak(lastSpeech);
+}, {passive:false});
+
+/* ================================================================
+   结果自动可见（revealEl）
+
+   为什么需要：页面从上到下是"结果区 → 操作按钮 → SOP 卡 → 设置"，
+   而用户点的是**下方**的按钮（拍照看看周围 / 拍照读文字 / 下一步）。
+   结果出现在上方，他的视线（以及低视力用户的放大镜视野）还停在按钮上 ——
+   得自己把页面滑回去才能看到。对低视力用户这不是"多一步操作"，
+   是"按了没反应"。要滑回去才能看到结果，等于结果不存在。
+
+   三条约束都不是可有可无的：
+   · **不抢焦点**：给结果区 focus() 会打断系统读屏正在念的内容，
+     而读屏是视障用户的主通道。滚动归滚动，朗读归 aria-live。
+   · **只在真的看不见时才滚**：结果区已经完整落在视口里就一动不动 ——
+     否则每次操作屏幕都跳一下，比不滚更烦人，低视力用户还会看晕。
+   · **尊重 prefers-reduced-motion**：前庭功能敏感的用户在系统里开了
+     "减弱动态效果"之后，平滑滚动会让他不适。这在本项目不是可选项。
+   ================================================================ */
+const reduceMotion = ()=> !!(window.matchMedia
+  && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+let revealTarget = null, revealPending = false;
+
+function revealEl(el){
+  if(!el) return;
+  /* 同一轮操作会连着调两次（结果区 + 距离表），各滚一次就是"跳两下"。
+     用一个 rAF 合并：只滚最后一个目标，也就是页面位置最靠下的那个。 */
+  revealTarget = el;
+  if(revealPending) return;
+  revealPending = true;
+  requestAnimationFrame(()=>{
+    revealPending = false;
+    const t = revealTarget;
+    if(!t) return;
+    /* 底栏量的是 #dock（整个固定条：语音行 + 三个键），
+       而不是里面的 <nav> —— 只减掉 <nav> 的高度会漏算语音那一行，
+       最后一排内容仍会被压在底栏下面。 */
+    const dock = document.getElementById('dock');
+    const dockH = dock ? dock.getBoundingClientRect().height : 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+
+    /* 跟屏区（.live）里的元素要分两种情况 —— 单纯短路是不够的：
+       ① 它已经**完整**露出来了 → 什么都不做。这是常态：它吸在视口顶端，
+          滚到哪儿都在，再滚一下只会把用户刚滚到的位置拽回去；
+       ② 它还在说明区底下、下半截正被底栏压着 —— **手机首屏就是这样**：
+          正文只露出"【前方情况】室内有储物柜和"一行，其余全被挡住。
+          这时把它顶到视口顶端，让 sticky 真正开始工作，
+          而不是指望用户自己滚一下去发现。 */
+    const live = t.closest && t.closest('.live');
+    if(live){
+      const lr = live.getBoundingClientRect();
+      if(lr.bottom <= vh - dockH - 8) return;      // 完整可见，别动
+      try{
+        live.scrollIntoView({block:'start', behavior: reduceMotion() ? 'auto' : 'smooth'});
+      }catch(e){
+        try{ live.scrollIntoView(); }catch(e2){}
+      }
+      return;
+    }
+
+    /* 底部导航是 fixed 的，视口下沿对它是"不可用区"，判可见时必须减掉，
+       否则最后一行正被底栏压着，用户还以为自己已经看全了。留 8px 余量。 */
+    const r = t.getBoundingClientRect();
+    if(r.top >= 8 && r.bottom <= (vh - dockH - 8)) return;   // 已经看得见，别动
+    try{
+      t.scrollIntoView({block:'center', behavior: reduceMotion() ? 'auto' : 'smooth'});
+    }catch(e){
+      /* 老内核不认 options 参数。退化成默认对齐（瞬间到位），
+         总比抛出去导致后续脚本不执行要好。 */
+      try{ t.scrollIntoView(); }catch(e2){}
+    }
+  });
+}
+
+/* 跟屏区只要出过一次结果，就从"静态占位"切成"吸顶常驻"。
+   首屏那块"还没有内容"不该先占着位置 —— 它会把用户往下滚到功能按钮的
+   距离白白拉长，而那时候根本还没有东西需要跟随。 */
+function liveAwake(){
+  const l = document.getElementById('live');
+  if(l) l.classList.remove('empty');
+}
+function setResult(html){ resultEl.innerHTML = html; liveAwake(); revealEl(resultEl); }
+function setDist(list){
+  liveAwake();
+  distEl.innerHTML = '';
+  (list||[]).forEach(d=>{
+    const b = document.createElement('b');
+    b.textContent = d.bearing + ' ' + d.steps + ' 步';
+    if(d.steps <= 4) b.classList.add('near');   // 4 步内标红，属于要立刻注意的距离
+    distEl.appendChild(b);
+  });
+  /* 有距离表时滚到它：它在结果区下方，滚到它等于"结果 + 距离"一起进视野。
+     为空则退回结果区 —— 滚到一个空 div 上等于什么都没发生。 */
+  revealEl((list && list.length) ? distEl : resultEl);
+}
+
+/* ================================================================
+   距离表：补齐它一直没有的无障碍入口
+
+   原先 `#dist` 只在屏幕上画几个 <b>，**既不在触摸探索里，也不是顺序导航的一项**
+   （全站 TOUCH_TARGETS 里根本没有它）。而语音那条路，方位是一句连读的口语 ——
+   三个方位连着念过去，用户很容易只记住最后一条。
+   距离表把它变成**结构化复读**（"共 3 条：12点 6步，1点 6步，11点 15步"），
+   摸一下、或者说一句，就能再听一遍并逐条清点。
+
+   「距离不猜 + 时钟方位」是答辩主线之一，可它的产物在非视觉通道上只剩三分之一。
+   注册进来就补齐了：摸到它 = 听到完整方位表。
+
+   空的时候不用特殊处理：没有数据时它的 getBoundingClientRect 高度为 0，
+   触摸探索的 visible 判据和顺序导航都会自动跳过，不会变成噪音。 */
+function distText(){
+  const cells = Array.prototype.slice.call(distEl.querySelectorAll('b'));
+  if(!cells.length) return '';
+  return '距离表，共 ' + cells.length + ' 条：'
+       + cells.map(b=>b.textContent.trim()).join('，');
+}
+bindAnnounceOnly($('#dist'), ()=> distText() || '距离表。当前没有距离数据', ()=>{
+  /* remember=false：它是"对已有结果的另一种读法"，不该顶掉 lastSpeech。
+     否则用户轻触结果区想重听那条结论时，重播出来的会是距离表。 */
+  const t = distText();
+  speak(t || '当前没有距离数据，先拍一张照片', false);
+}, { nav: true });
+
+/* ================================================================
+   结果播完之后补的那一句提示
+
+   有两条候选，都很值得说，而且都是"用户不知道它存在"的类型：
+     ① 方位可以再听一遍 —— 方位在「注意」段里是一句连读的口语，
+        用户很容易只抓住其中一条；距离表是**结构化复读**
+        （"距离表，共 3 条：12点 6步，1点 6步，11点 15步"），能逐条听清；
+     ② 不对的话可以找人 —— Be My Eyes 的立身之本就是"AI 不行转真人"。
+        本站的「呼叫人工志愿者」是个**孤立功能**，长按「执行」的快捷通道
+        早就做好了，缺的只是**说出来**。
+
+   但两条连起来念会明显拉长一次播报，而用户常常正**边走边听**。
+   所以：一次结果只补一句，轮流说，各不超过两次（一共最多 4 次）。
+   第一次先说"可以找人"——那是用户形成产品印象的时刻，也是最缺的一环。
+   ================================================================ */
+let hintLeft = 4, hintTurn = 0;
+function hintAfterResult(list){
+  if(hintLeft <= 0) return;
+  const n = (list || []).length;
+  const useBearing = n >= 2 && hintTurn > 0;
+  hintLeft--;
+  hintTurn = useBearing ? 0 : 1;
+  const line = useBearing
+    ? '方位要是没听清，说「距离表」可以再听一遍'
+    : '不对的话，长按执行键可以直接找人';
+  /* afterSpeech：等主结论念完再说，否则会被自己的下一句当场掐断
+     （speak 的第一步就是 cancel）。 */
+  afterSpeech(()=> speak(line, false), 15000);
+}
+/* 调试面板已从界面上移除（评委看到"调试信息"会以为是半成品）。
+   信息改投 console：排查「非安全上下文 / 取图降级原因 / 后端是否 mock」
+   时仍能在 F12 控制台看到，诊断能力不丢。
+   之所以保留同名函数而不连定义一起删：全页有 4 处调用点，
+   删掉定义会让它们当场抛 ReferenceError。 */
+/* 调试输出统一开关。
+   原来 dbg() 是无条件 console.log，而它在**每次接口成功**时都会打印完整返回体
+   （含模型返回原文）。控制台噪音本身不算大事，但它会淹掉真正的报错 ——
+   出问题时第一反应是"控制台一堆东西"，而不是"看见了那行红的"。
+   改成显式开关：地址栏加 ?debug=1 才输出，日常保持安静。 */
+const DEBUG = /(?:\?|&)debug=1(?:&|$)/.test(location.search);
+function dbg(obj){
+  if(!DEBUG) return;
+  try{ console.log('[启明随行]', typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)); }catch(e){}
+}
+
+/* ================================================================
+   第 4 层：启动闸门（F13）
+   ================================================================ */
+const gate = $('#gate');
+const GUIDE_KEY = 'qm_guide_seen_v2';
+let gateOpened = false, gateLastTouch = 0, guideSeen = false;
+try{ guideSeen = localStorage.getItem(GUIDE_KEY) === '1'; }catch(e){}
+
+/* 注意：本函数必须**同步**执行到 unlockSpeech()，
+   不能在前面 await 任何东西 —— 否则就脱离了用户手势，音频解锁会失败。 */
+function openGate(){
+  if(gateOpened) return;
+  gateOpened = true;
+
+  haptic(HAPTIC_READY);                        // 双震 = 已就绪，不依赖听觉
+  unlockSpeech();                              // 必须与本次触摸同一任务
+  /* 解锁之后再来一次"到底有没有出声"的实测。
+     刻意放在这里而不是塞进 unlockSpeech：那个函数必须保持同步、干净 ——
+     凡是需要 await / 定时器的动作都不能进它，否则会脱离用户手势。 */
+  setTimeout(verifySpeech, VOICE_PROBE_MS);
+  gate.classList.add('gone');
+  setTimeout(()=>{ gate.style.display = 'none'; }, 240);
+
+  ensureCam();                                 // 这个用户手势顺便用来申请摄像头权限
+
+  setTimeout(()=>{
+    /* 演示模式必须占用一次语音通道说清楚。
+       这是"识别结果可信度"的前提：用户听到一段内容，有权知道它是真的算出来的，
+       还是系统内置的示例。事后在界面角落写一行小字是不够的。 */
+    const demoNote = DEMO_MODE ? '。注意，当前是演示模式，听到的内容是示例' : '';
+    let guide = '';
+    if(guideSeen){
+      guide = '请选择' + demoNote;
+      speak(guide);
+    }else{
+      /* 首次引导只有一次机会，必须把三条通道一次说全：
+         摸、用底部固定三键、说话。少说一条，就有用户永远不知道它存在。
+         尤其"底部三个固定键"—— 那是本项目对"按钮按不准"的正面回答，
+         不告诉用户等于没做。
+         紧急呼叫破例加了半句：它是一条**隐含手势**（长按），
+         而长按在界面上没有任何视觉线索可供"偶然发现"；
+         不在这里说，用户就只能在真正紧急的时候第一次尝试它。
+         代价是这句话要念 14 秒左右，只念一次，可以接受。
+         其余细节（比如"可以退回上一步"）仍旧不塞进来：
+         那些的正确位置是"操作到那一步时再说"和"可以重听"。 */
+      guide = '请选择。手指划过按钮会念出名字，抬手指打开。'
+            + '屏幕底部有三个固定的键：上一个、执行、下一个。也可以按住说话。'
+            + '紧急时长按「执行」键，可以直接呼叫人工志愿者' + demoNote;
+      speak(guide);
+      try{ localStorage.setItem(GUIDE_KEY, '1'); }catch(e){}
+    }
+    showEnv();
+    if(!TTS_OK){
+      /* 结果区也要写一份：横幅在页面最上方，低视力用户的手机会先看到这一屏。
+         两份文案不重复劳动 —— 这里只说"是什么、换什么"，步骤和自检入口在横幅里。 */
+      setResult('<span class="ph">当前浏览器不支持语音播报（微信内置浏览器、'
+              + '部分手机自带浏览器属于这种情况）。请改用 Chrome / Safari / Edge 打开，'
+              + '或打开手机系统自带的读屏功能：安卓叫 TalkBack，iPhone 叫 VoiceOver。'
+              + '页面最上方有一段红色提示，里面有排查步骤和语音自检入口。</span>');
+    }else if(photoMode !== 'camera'){
+      /* 取图降级必须同时进**语音通道**，不能只写在屏幕文字里。
+         这条原来只 setResult 了一段视觉文字：对全盲用户等于没说 ——
+         他会以为"点了拍照没打开摄像头"是应用坏了，
+         而实际是浏览器安全策略把网页取景换成了系统相机，功能完好。
+         等引导念完再说（afterSpeech），否则 speak() 会先 cancel 掉引导。 */
+      const fb = photoFallbackReason === 'insecure'
+        ? '当前地址不是安全连接，浏览器不允许网页直接取景，已自动改用系统相机，功能不受影响。'
+        : '网页取景没拿到授权，已自动改用系统相机，功能不受影响。';
+      setResult('<span class="ph">' + fb + '</span>');
+      afterSpeech(()=> speak('提示。' + fb, false), 20000);
+    }
+  }, 1100);
+}
+
+/* 同步播报第一句 —— 这就是解锁音频的动作本身。
+   之前所有 speak() 都会被浏览器拒绝，只有这一次（在触摸任务内）会被放行。
+   必须走 doSpeak 而不是 speak()：speak() 可能因为"刚取消过"而把调用推到
+   80ms 后的定时器里，那就脱离了用户手势，解锁失败。 */
+function unlockSpeech(){
+  if(!TTS_OK) return;
+  try{
+    // 刻意不在这里调 cancel()：页面刚加载，本来就没有内容在播，
+    // 而"cancel 紧跟 speak"正是 Chrome 会丢 utterance 的那个组合。
+    // 解锁是整个应用唯一一次机会，不能让它踩在自己要修的坑上。
+    doSpeak('启明随行，已就绪');
+  }catch(e){}
+}
+
+gate.addEventListener('touchend', (e)=>{
+  gateLastTouch = Date.now();
+  if(e.cancelable) e.preventDefault();
+  openGate();
+}, {passive:false});
+gate.addEventListener('click', ()=>{
+  if(Date.now() - gateLastTouch < 900) return;
+  openGate();
+});
+gate.addEventListener('keydown', (e)=>{
+  if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); openGate(); }
+});
+
+/* ================================================================
+   取图：三条通道，按运行环境自动选择
+
+   必须先讲清楚的一个坑（本项目最容易现场翻车的地方）：
+   getUserMedia() 只在「安全上下文」里存在，安全上下文 = https:// 或 localhost/127.0.0.1。
+   手机用 http://172.16.169.135:8135 这种局域网 IP 访问时，
+   navigator.mediaDevices 直接是 undefined —— 不是报错、不是权限弹窗，
+   是这个对象根本不存在，页面会静默失去拍照能力，用户按了没反应也不知道为什么。
+   iOS 更彻底：所有第三方浏览器都被平台规则强制使用 WebKit，没有任何开关能绕。
+
+   而 <input type="file" capture="environment"> 走的是**系统相机 App**，
+   不属于 WebRTC，因此不受安全上下文限制 ——
+   在 HTTP 局域网、iOS Safari、微信内置浏览器上全都能用。
+   代价是每次要手动调起相机，但本项目本来就是"拍一张 → 理解一次"，体验损失很小。
+   ================================================================ */
+const SECURE_CTX = (window.isSecureContext === true);
+const CAM_API_OK = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+/* camera  = 网页内直接取景（localhost / HTTPS 下可用）
+   capture = 调起系统相机（HTTP 局域网、iOS Safari、微信、摄像头被拒时） */
+let photoMode = CAM_API_OK ? 'camera' : 'capture';
+/* 降级原因要分开记：非安全上下文（地址问题）和被拒绝（授权问题）的处置不同，
+   混在一起会让人误以为是 HTTPS 没配好，白白排查半天。 */
+let photoFallbackReason = CAM_API_OK ? '' : 'insecure';
+let stream = null;
+
+async function ensureCam(){
+  if(photoMode !== 'camera') return false;
+  if(stream) return true;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    const v = $('#cam'); v.srcObject = stream; v.style.display='block';
+    await v.play();
+    /* 必须等画面尺寸就绪。刚 play() 的那一帧 videoWidth 还是 0，
+       此时 drawImage 画出来是一张全黑图，而它会被当成"一张正常照片"
+       上传 —— 用户听到的是一段基于黑图的荒谬描述，全程没有任何报错。
+       这类"静默产出垃圾数据"的故障，比抛异常难查得多。 */
+    if(!v.videoWidth){
+      await new Promise(res=>{
+        let done = false;
+        const fin = ()=>{ if(done) return; done = true; res(); };
+        v.addEventListener('loadedmetadata', fin, {once:true});
+        setTimeout(fin, 1500);        // 兜底：超时就按现状取，不让用户干等
+      });
+    }
+    return true;
+  }catch(e){
+    /* 被拒绝 / 被占用 / 非安全上下文：静默降级到系统相机，不打断用户 */
+    photoMode = 'capture';
+    photoFallbackReason = SECURE_CTX ? 'denied' : 'insecure';
+    return false;
+  }
+}
+/* ================================================================
+   把刚拍下的这一张放进跟屏区
+
+   为什么要显示"我拍的那张"：视障用户看不见它，但**陪同者与低视力用户**
+   需要它。取景质检说"这张可能拍糊了，请重拍"时，只有把图摆出来，
+   旁边的人才判断得了该不该重拍 —— 否则所有人都只能盲信一句话。
+   位置也讲究：它和识别结果在同一个吸顶容器里，于是"哪张图 → 什么结论"
+   永远挨在一起，不会出现"结果还在屏幕上、照片早滚走了"。
+   ================================================================ */
+let shotURL = '';
+function showShot(blob){
+  const el = $('#shot');
+  if(!el || !blob) return;
+  try{
+    /* 用 objectURL 而不是 canvas.toDataURL：dataURL 是几十万字符的字符串，
+       连拍几张就在内存里堆成几份副本，手机浏览器真的会崩。
+       上一张必须 revoke，否则每拍一张漏一个 blob（同样会攒到崩）。 */
+    if(shotURL) URL.revokeObjectURL(shotURL);
+    shotURL = URL.createObjectURL(blob);
+    el.src = shotURL;
+    el.style.display = 'block';
+  }catch(e){ /* 老内核没有 createObjectURL，那就只是不显示，不影响识别 */ }
+}
+
+/* 网页取景：画一帧到 canvas，**顺手把这一帧的像素算一遍质检**。
+   返回 {blob, quality}，quality 为 null 表示"没检成"（一律放行）。 */
+function grab(){
+  const v = $('#cam'), cv = $('#cv');
+  cv.width = v.videoWidth || 720; cv.height = v.videoHeight || 1280;
+  cv.getContext('2d').drawImage(v,0,0);
+  const quality = assessShot(cv);
+  return new Promise(res=>cv.toBlob(b=>res({ blob:b, quality:quality }),'image/jpeg',0.8));
+}
+
+/* 调起系统相机（capture="environment" 指定后置镜头）。
+   用户取消时必须 resolve(null)，否则 Promise 永久挂起 ——
+   界面会一直停在"正在拍照识别"，视障用户既看不见也听不到原因。 */
+function pickPhoto(){
+  return new Promise(res=>{
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*';
+    if(photoMode === 'capture') inp.setAttribute('capture', 'environment');
+    let done = false;
+    const finish = (v)=>{ if(done) return; done = true; clearTimeout(timer); res(v); };
+    inp.onchange = ()=> finish(inp.files && inp.files[0] ? inp.files[0] : null);
+    inp.addEventListener('cancel', ()=> finish(null));   // Chrome / iOS 14+ 会派发
+    const timer = setTimeout(()=> finish(null), 180000); // 兜底，防止永久挂起
+    inp.click();
+  });
+}
+
+async function getBlob(){
+  if(photoMode === 'camera' && await ensureCam()){
+    const r = await grab();
+    showShot(r.blob);
+    return r;
+  }
+  const f = await pickPhoto();
+  /* 拍到的这张要摆出来（见 showShot）。用户取消时 f 为 null，
+     函数内部直接返回，不会把上一张覆盖成空。 */
+  showShot(f);
+  /* 系统相机那条路拿到的是 File，要解码才能算质检。
+     只走 createImageBitmap（Chrome 50+ / Safari 15+ / Firefox 42+ 都有）：
+     退回 <img>+createObjectURL 那条老路在部分环境里 onload 永不触发，
+     而我们是在用户按了按钮之后 await 它 —— 那会变成"界面永远卡在正在拍照"，
+     比不做质检糟糕得多。解不开就当没检过，照旧上传。 */
+  if(!f || typeof createImageBitmap !== 'function') return { blob:f, quality:null };
+  let quality = null;
+  try{
+    const img = await createImageBitmap(f);
+    quality = assessShot(img);
+    if(img.close) try{ img.close(); }catch(e){}
+  }catch(e){ quality = null; }
+  return { blob:f, quality:quality };
+}
+
+/* ================================================================
+   取景质检（F05b）—— "这张照片能不能用"必须在**按下之后、上传之前**回答
+
+   为什么这一条比它看起来重要：明眼用户拍糊了，看一眼预览就知道重拍；
+   视障用户**没有任何办法自我纠正**。拍糊、镜头被手指挡住、在口袋里误触，
+   都会照常上传，然后 5~8 秒后长出一段"荒谬但合理"的结论 —— 比如一张全黑图
+   换来一句"暂无明显障碍"。用户听到的是一句通顺的话，没有任何迹象指向照片本身，
+   他会认为**软件坏了**。这条链路里，最薄的一环恰恰是最不可恢复的一环。
+
+   同类产品的做法：Google 相机 Guided Frame 在**拍摄前**就用语音+震动
+   告诉用户"入镜了、可以拍了"，随后自动快门；Seeing AI 是"对准即读"。
+   我们做不到实时引导（纯 H5 没有取景分析的余量），但**拍完之后立刻判断**是该有的底线。
+
+   四个判据全部在本地算，**不发请求**：
+     ① 平均亮度        —— 太暗（黑图 / 没开灯）或过曝（对着灯）
+     ② 5%~95% 分位差   —— 90% 的像素挤在 16 级以内 = 画面里没有内容（镜头被挡 / 对着墙）
+     ③ 拉普拉斯方差     —— 高频能量；糊图几乎没有（阈值压得很低，宁可漏判不可误杀）
+     ④ 像素数           —— 0 就什么都别谈
+
+   刻意做成**只拦不讲理的**：模糊阈值取 8（在 160px 缩略图上，正常有内容的
+   照片通常在几十以上），宁可漏杀不可误杀 —— 误拦一张好照片，用户要白白多按一次；
+   漏放一张糊图，用户只是拿到一段没用的描述。两者代价都不大，但误拦会让用户
+   怀疑"这个软件是不是坏了"，所以阈值往保守一侧压。
+   ================================================================ */
+const SHOT_W = 160;          // 缩略宽度：算得快，也天然抹掉传感器噪点（噪点会虚高清晰度）
+const SHOT_MIN_MEAN = 35;    // 平均亮度下限
+const SHOT_MAX_MEAN = 248;   // 平均亮度上限
+const SHOT_MIN_RANGE = 16;   // 分位差下限：低于它说明画面里没有内容
+const SHOT_MIN_LAP = 8;      // 拉普拉斯方差下限
+
+/* 纯计算，不碰 DOM —— 便于单独验证阈值（见 results/ 的取景质检实测）。 */
+function shotStats(data, W, H){
+  const n = Math.min(W * H, (data.length / 4) | 0);
+  /* 样本太少（退化输入、异常画布）时判据不可靠，返回 null = 放行。
+     宁可不检，也不能拿一条 1 像素的"画面没有内容"去拦住用户。 */
+  if(n < 100) return null;
+  const g = new Float32Array(n);
+  let sum = 0;
+  for(let p = 0; p < n; p++){
+    const i = p * 4;
+    const v = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
+    g[p] = v; sum += v;
+  }
+  const mean = sum / n;
+  /* 分位数用 256 桶直方图，比排序快且足够准 */
+  const hist = new Uint32Array(256);
+  for(let p = 0; p < n; p++) hist[Math.min(255, Math.max(0, Math.round(g[p])))]++;
+  let acc = 0, p5 = 0, p95 = 255;
+  for(let v = 0; v < 256; v++){ acc += hist[v]; if(acc >= n * 0.05){ p5 = v; break; } }
+  acc = 0;
+  for(let v = 255; v >= 0; v--){ acc += hist[v]; if(acc >= n * 0.05){ p95 = v; break; } }
+  /* 拉普拉斯方差。边缘两圈跳过（没有完整四邻域）。
+     缩略图太扁（H<3）时算了等于没算 —— 返回 null 表示"这一项不可用"，
+     绝不能返回 0，那会被当成"极度模糊"把一张好照片拦下来。 */
+  let s1 = 0, s2 = 0, k = 0;
+  if(H >= 3 && W >= 3){
+    for(let y = 1; y < H - 1; y++){
+      for(let x = 1; x < W - 1; x++){
+        const i = y * W + x;
+        const lap = 4 * g[i] - g[i-1] - g[i+1] - g[i-W] - g[i+W];
+        s1 += lap; s2 += lap * lap; k++;
+      }
+    }
+  }
+  const lvar = k ? (s2 / k - (s1 / k) * (s1 / k)) : null;
+  return { mean: mean, range: p95 - p5, lapvar: lvar };
+}
+
+/* 判据 -> 一句可执行的话。措辞必须指向**用户能做的下一个动作**：
+   "画面不清楚"没有信息量，"把手机抬高一点再拍"才有。 */
+function judgeShot(s){
+  if(!s) return { code:'ok' };
+  if(s.mean < SHOT_MIN_MEAN)
+    return { code:'dark',
+      show:'画面太暗，看不出内容。请对着有光的方向、把手机抬高一点再拍一次。',
+      say:'画面太暗了，请对着有光的方向再拍一次' };
+  if(s.mean > SHOT_MAX_MEAN)
+    return { code:'bright',
+      show:'画面太亮，像是对着灯或反光。请稍微转个方向再拍一次。',
+      say:'画面太亮了，请换个方向再拍一次' };
+  if(s.range < SHOT_MIN_RANGE)
+    return { code:'blank',
+      show:'画面里没有内容，可能是镜头被挡住了。请擦一下镜头再拍一次。',
+      say:'好像挡住镜头了，请擦一下镜头再拍' };
+  /* lapvar 为 null = 这一项算不出来（缩略图太扁），不是"模糊"。跳过。 */
+  if(typeof s.lapvar === 'number' && s.lapvar < SHOT_MIN_LAP)
+    return { code:'blur',
+      show:'画面比较模糊。请稳住手机、停顿一秒再拍一次。',
+      say:'画面有点糊，请稳住一秒再拍' };
+  return { code:'ok' };
+}
+
+/* 从任意可绘制来源（canvas / video / ImageBitmap）算质检。
+   任何一步失败都返回 null = **放行**：质检是增益，不是关卡。 */
+function assessShot(source){
+  if(!source) return null;
+  try{
+    const sw = source.videoWidth || source.naturalWidth || source.width || 0;
+    const sh = source.videoHeight || source.naturalHeight || source.height || 0;
+    if(!sw || !sh) return null;
+    const W = SHOT_W, H = Math.max(1, Math.round(sh * W / sw));
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const ctx = c.getContext && c.getContext('2d');
+    if(!ctx) return null;                     // 环境没有 canvas：不检
+    ctx.drawImage(source, 0, 0, W, H);
+    const px = ctx.getImageData(0, 0, W, H).data;
+    const j = judgeShot(shotStats(px, W, H));
+    return j;
+  }catch(e){
+    dbg('取景质检跳过：' + (e && e.message));
+    return null;
+  }
+}
+
+/* 质检闸门。返回 true = 放行；false = 已拦住并已经告诉用户怎么重拍。
+   调用点拿到 false 就直接 return，**不要**再往下走。 */
+function shotPass(quality){
+  if(!quality || quality.code === 'ok') return true;
+  haptic(HAPTIC_ERR);
+  setResult('<span class="ph">' + quality.show + '</span>');
+  /* 不写 lastSpeech：这不是"结果"，用户轻触结果区时该重听上一次真结果，
+     而不是回放一遍"画面太暗"。 */
+  speak(quality.say, false);
+  return false;
+}
+
+/* 没拿到图：必须说出来，不能静默返回。
+   对看不见屏幕的用户，"点了没反应"是最糟糕的失败模式。 */
+function noPhoto(){
+  setResult('<span class="ph">没有取到照片。请再点一次「拍照看看周围」。</span>');
+  haptic(HAPTIC_ERR);
+  speak('没有取到照片，请再试一次');
+}
+
+/* 环境诊断：现场排查用。非安全上下文是这类项目最常见的翻车点，
+   把判断依据直接打进调试区，省得在手机上盲查。 */
+function showEnv(){
+  dbg({
+    origin: location.origin,
+    '安全上下文': SECURE_CTX,
+    '网页取景接口': CAM_API_OK,
+    '当前取图方式': photoMode,
+    '降级原因': photoFallbackReason || '（未降级）',
+    '语音播报': TTS_OK,
+    '说明': SECURE_CTX
+      ? '安全上下文，网页可直接取景'
+      : '非安全上下文：网页取景不可用，已自动切换为「系统相机」，功能不受影响。'
+        + '如需网页内取景，请用 https 或 localhost 访问。',
+  });
+}
+
+/* ================================================================
+   统一请求
+   ================================================================ */
+const FETCH_TIMEOUT_MS = 30000;   // 后端单次模型调用上限 20s，再留重试备用模型的余量
+
+/* 等待期的安抚必须**递进**，不能只响一声。
+   原来只在第 8 秒说一句"网络有点慢"，之后到 30 秒超时之间是整整 22 秒纯静默 ——
+   视障用户在静默里无法区分"正在处理"和"已经卡死"，多数人的反应是杀掉重来，
+   而重来意味着再来一次 8 秒的模型调用（三级降级最坏 24 秒）。
+   三句话本身也在传递"还在推进"，这比一句"请稍等"有用得多。 */
+const SLOW_HINTS = [
+  [3000,  '还在处理，请稍等'],
+  [9000,  '网络有点慢，还在处理'],
+  [18000, '还在等服务器。如果一直没反应，稍后可以轻触屏幕中间重试'],
+];
+
+/* 访问口令走请求头而不是 URL 参数：URL 会进浏览器历史、进日志、也会被随手截图。
+   抽成一个函数，是因为**不止 post() 一处需要它** ——
+   "退出流程"的 DELETE 原来是一句裸 fetch，漏了这个头，
+   于是在口令保护的部署版上静默 401：界面显示"流程已退出"，后端会话却还留着。
+   这类"只漏了一处"的缺陷不会报任何错，只能靠把构造方式收敛到一处来防。 */
+function authHeaders(){
+  return accessCode ? { 'X-Access-Code': accessCode } : undefined;
+}
+
+async function post(path, form){
+  const ac = new AbortController();
+  const kill = setTimeout(()=>{ try{ ac.abort(); }catch(e){} }, FETCH_TIMEOUT_MS);
+  const slowTimers = SLOW_HINTS.map(([ms, txt])=> setTimeout(()=>speak(txt, false), ms));
+  try{
+    /* 只有部署版才带得上（本地 accessCode 为空，不带这个头）。 */
+    const r = await fetch(API + path, {
+      method:'POST', body:form, signal:ac.signal, headers: authHeaders(),
+    });
+    /* 必须显式检查状态码。后端对空文件返回 400、对超限返回 413，
+       这两种响应体里没有 speech/reply，静默往下走会得到一句"没有听清"——
+       把"你传错了"伪装成"我没听懂"，归因完全指向错误的方向。
+       写 r.ok === false 而不是 !r.ok：测试桩与部分旧环境不提供该字段，
+       用 !r.ok 会把"字段缺失"误判成"请求失败"。 */
+    if(r.ok === false){
+      let detail = '';
+      try{ detail = (await r.json()).detail || ''; }catch(e){}
+      /* 后端明确拒绝，就不是网络问题。必须把这个区别**带出去**，
+         否则下面那层 catch 会统一说成"连接失败，请检查网络"——
+         用户于是去查网络，而真正的原因是缺口令或请求太频繁。
+         归因错方向比不报错更耗时间。 */
+      const err = new Error(detail || ('服务返回 ' + r.status));
+      err.backendDetail = detail;
+      err.status = r.status;
+      throw err;
+    }
+    const j = await r.json();
+    /* 模型名与耗时不再写上屏幕（见 HTML 里那段说明），只进 console。 */
+    haptic(HAPTIC_RESULT);                // 结果到达，与"确认执行"的 22ms 区分开
+    dbg(j);
+    return j;
+  }catch(e){
+    haptic(HAPTIC_ERR);
+    const timedOut = !!(e && e.name === 'AbortError');
+    /* 后端明确拒绝（缺口令 / 太频繁 / 文件为空）要说成"它拒绝了这件事"，
+       不能说成"连接失败"。这两种描述把用户指向完全不同的排查方向：
+       前者要找回口令，后者会去查 WiFi —— 而 WiFi 从头到尾都是好的。 */
+    const rejected = !!(e && e.backendDetail);
+    const failMsg = rejected
+      ? esc(e.backendDetail) + '轻触屏幕中间的结果区可以重试。'
+      : timedOut
+        ? '处理超时。可能是网络较慢或后端没有响应。轻触屏幕中间的结果区可以重试。'
+        : '连接失败：' + ((e && e.message) || e) + '。请检查网络或后端是否启动。轻触屏幕中间的结果区可以重试。';
+    setResult('<span class="ph">' + failMsg + '</span>');
+    /* 不写 lastSpeech：失败提示不是"结果"。否则用户轻触结果区想重试时，
+       反而会听到一遍"连接失败"的回放。 */
+    /* 说"屏幕中间的结果区"而不是"这里"：对看不见屏幕的人，"这里"指的是
+       他手指现在的位置，而失败时他手指还停在那个按钮上 —— 他会去再按一次按钮，
+       然后听到的是"正在处理"之外什么都没发生（其实也重试了，但那条路绕）。
+       把位置说成**相对屏幕的固定说法**，他才找得到。 */
+    speak(rejected ? e.backendDetail
+        : timedOut ? '处理超时，轻触屏幕中间的结果区可以重试'
+                   : '连接失败，轻触屏幕中间的结果区可以重试', false);
+    throw e;
+  }finally{
+    clearTimeout(kill); slowTimers.forEach(clearTimeout);
+  }
+}
+const textOf = (j)=> (j.speech || j.reply || '没有听清，请再试一次。');
+
+/* ================================================================
+   功能绑定：全部走 bindAccessible（触摸探索 + 震动 + 键盘）
+   ================================================================ */
+
+/* ---------- F01–F05 场景理解 ---------- */
+bindAccessible($('#btnScene'), '拍照看看周围', async ()=>{
+  stopSpeak();
+  setResult('<span class="ph">正在拍照识别，请稍等…</span>');
+  speak('我看一下，请稍等', false);                 // F15 填充语音
+  const shot = await getBlob();
+  if(!shot || !shot.blob){ noPhoto(); return; }
+  /* 质检没过就到此为止 —— 这一秒的拦截，换掉的是"等 6 秒拿到一段基于糊图的结论" */
+  if(!shotPass(shot.quality)) return;
+  const fd = new FormData();
+  fd.append('image', shot.blob, 'scene.jpg');
+  fd.append('query', $('#q').value);
+  const j = await post('/api/understand', fd);
+  setResult(esc(j.reply));
+  setDist(j.distances);                      // F03 把距离表画出来
+  speak(textOf(j));
+  hintAfterResult(j.distances);
+});
+
+/* ---------- F06/F07 文字阅读（按类型分流） ---------- */
+let docType = 'auto';
+const chipEls = Array.from(document.querySelectorAll('#docChips .chip'));
+
+function selectDocType(chip){
+  chipEls.forEach(x=>{
+    const on = x === chip;
+    x.classList.toggle('on', on);
+    x.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  docType = chip.dataset.t;
+  /* 选中必须有明确回执。低位视力用户看不出哪一项换了底色，
+     全盲用户则连"这次触摸到底生效了没有"都无法确认 ——
+     原实现选完一片安静，用户只会以为没按上，然后反复按。 */
+  haptic(HAPTIC_TAP);
+  speak('已选择' + chip.textContent.trim(), false);
+}
+
+/* 文字类型也全部走 bindAccessible：自动获得「滑到就报名字、抬手才选中、
+   滑出即取消」的完整探索行为，与所有大按钮保持一致。
+   原实现是事件委托 + 只有 touchstart 报名字，不参与 document 级分派 ——
+   手指从"药品"滑到"单据票据"时听到的还是"药品"，抬手却选中了"单据票据"。
+   这正是大按钮修过的那个坑，但这里漏掉了：两个通道给出矛盾信息，
+   对看不见屏幕的用户比"没有反馈"更糟。 */
+chipEls.forEach(c=>{
+  /* 用逗号而不是冒号：导航播报是「第 N 项：<名字>」，
+     名字里再带一个冒号就会出现两个停顿（"第 2 项：文字类型：药品"），
+     听觉上像两句话。逗号只停一下。 */
+  bindAccessible(c, '文字类型，' + c.textContent.trim(), ()=> selectDocType(c));
+});
+
+bindAccessible($('#btnRead'), '拍照读文字', async ()=>{
+  stopSpeak();
+  setResult('<span class="ph">正在读取文字，请稍等…</span>');
+  speak('我看一下，请稍等', false);
+  const shot = await getBlob();
+  if(!shot || !shot.blob){ noPhoto(); return; }
+  if(!shotPass(shot.quality)) return;
+  const fd = new FormData();
+  fd.append('image', shot.blob, 'text.jpg');
+  fd.append('query', $('#q').value);
+  fd.append('doc_type', docType);
+  const j = await post('/api/read', fd);
+  setResult(esc(j.reply));
+  setDist([]);
+  speak(textOf(j));
+  hintAfterResult(j.distances);
+});
+
+/* ---------- F09–F12 SOP 流程引导 ---------- */
+let sid = null, totalSteps = 0, curIndex = 0;
+
+/* 流程走完之后，只留下「退回上一步」和「退出」。
+   为什么不是把整张卡片藏起来：视障用户误判"已到达"最可能发生在**最后一步** ——
+   听到"已完成"的那一刻才发现自己认错了地方，而此时按钮全都不见了，
+   连"我想退回去"都无从表达。留住纠错入口，比视觉上"干净"重要得多。 */
+function setSopControls(finished){
+  const n = $('#btnNext'), m = $('#btnManual');
+  if(n) n.style.display = finished ? 'none' : '';
+  if(m) m.style.display = finished ? 'none' : '';
+}
+
+function renderSop(j){
+  $('#sopCard').style.display = 'block';
+  if(j.flow_title)  $('#sopFlow').textContent = j.flow_title;
+  else if(j.flow_id) $('#sopFlow').textContent = j.flow_id === 'sop_transit' ? '乘车引导' : '就医引导';
+  totalSteps = j.total_steps || totalSteps;
+  curIndex = j.index || curIndex;
+  $('#sopStep').textContent = j.finished ? '全部完成' : `第 ${curIndex} 步，共 ${totalSteps} 步`;
+  $('#sopBar').style.width = totalSteps ? (curIndex / totalSteps * 100) + '%' : '0';
+  setSopControls(!!j.finished);
+  /* 完成时"下一步"会被隐藏，焦点可能正停在它上面 —— 立刻把悬空焦点清掉，
+     否则用户再按「执行」会触发一个已经不在屏幕上、也不该再执行的动作。 */
+  if(j.finished && focusTarget && !navigableTargets().includes(focusTarget)){
+    focusTarget = null; refreshRunLabel();
+  }
+}
+async function startSop(flowId){
+  stopSpeak();
+  const fd = new FormData();
+  fd.append('flow_id', flowId);
+  const j = await post('/api/sop/start', fd);
+  sid = j.session_id; totalSteps = j.total_steps; curIndex = 1;
+  setSopControls(false);
+  setResult(`<div class="stepbar"><span class="badge">${esc(j.flow_title)}</span>`
+          + `<span>第 1 步，共 ${esc(j.total_steps)} 步：${esc(j.step.title)}</span></div>${esc(j.speech)}`);
+  renderSop(j);
+  speak(j.speech);
+}
+bindAccessible($('#btnSopMedical'), '就医引导', ()=> startSop('sop_medical'));
+bindAccessible($('#btnSopTransit'), '乘车引导', ()=> startSop('sop_transit'));
+
+/* SOP 推进的共享锁。
+   "拍照确认"与"已到达，直接下一步"是两个独立按钮，各自持自己的执行锁 ——
+   但它们改的是**同一个**后端会话。用户同时点、或快速交替点两个按钮时，
+   两个请求会并发推进同一会话，直接跳步；
+   而视障用户看不到进度条，只会听到步骤顺序莫名其妙地错乱。
+   所以这把锁必须按会话共享，不能按按钮。 */
+let sopPending = false;
+
+async function advance(manual){
+  if(!sid){ setResult('<span class="ph">请先说「就医引导」或「乘车引导」。</span>'); speak('请先选择就医引导或乘车引导', false); return; }
+  if(sopPending){ haptic(HAPTIC_TOUCH); speak('正在处理，请稍等', false); return; }
+  const mySid = sid;                        // 记下本次请求属于哪一个会话
+  sopPending = true;
+  stopSpeak();
+  setResult('<span class="ph">' + (manual ? '按你的确认推进…' : '正在确认是否到达…') + '</span>');
+  try{
+    const fd = new FormData();
+    fd.append('session_id', mySid);
+    if(manual){
+      fd.append('manual_reached', '1');     // 视觉失效时的人工兜底通道
+    }else{
+      speak('我确认一下', false);
+      const shot = await getBlob();
+      if(!shot || !shot.blob){ noPhoto(); return; }
+      /* SOP 里的"拍照确认"同样先过质检：拿一张糊图去判断"到没到"，
+         模型多半会回 reached=false，用户听到"还没到 XX 的位置"，
+         于是继续原地打转 —— 他会以为是自己走错了，而不是照片的问题。 */
+      if(!shotPass(shot.quality)) return;
+      fd.append('image', shot.blob, 'step.jpg');
+    }
+    const j = await post('/api/sop/step', fd);
+    /* 请求在飞的时候，用户可能已经退出流程、甚至重新开始了另一条流程。
+       这一份结果属于上一个会话，必须丢弃 —— 否则它会把刚关掉的 SOP 卡片
+       又弹回来，用户会以为"退出根本没生效"。 */
+    if(sid !== mySid) return;
+    renderSop(j);
+    if(j.finished){
+      setResult(esc(j.speech)); speak(j.speech);
+      /* 刻意**不**把 sid 置空。
+         置空是"这一步已经不可挽回了"的隐含声明 —— 但视障用户完全有可能
+         在听到"已完成"之后才意识到自己认错了地方（比如把分诊台当成了取号机）。
+         保留 sid，「退回上一步」才能把最后一步要回来。 */
+    }else{
+      setResult(`<div class="stepbar"><span class="badge">第 ${j.index} 步，共 ${j.total_steps} 步</span>`
+              + `<span>${esc(j.step.title)}</span></div>${esc(j.speech)}`);
+      speak(j.speech);
+    }
+  }finally{
+    sopPending = false;
+  }
+}
+bindAccessible($('#btnNext'),   '拍照确认，继续下一步', ()=> advance(false));
+bindAccessible($('#btnManual'), '已到达，直接下一步',   ()=> advance(true));
+
+/* 退回上一步（F11b）。与 advance 共用同一把会话锁 sopPending ——
+   同一个会话上不能同时"前进"和"后退"，两者并发会让 index 变成
+   "前进一格又退一格"的随机结果，而用户听到的是两个都播报了。 */
+bindAccessible($('#btnBack'), '退回上一步，刚才判断错了', async ()=>{
+  if(!sid){
+    setResult('<span class="ph">现在没有进行中的流程。</span>');
+    speak('现在没有进行中的流程。可以先说「就医引导」或「乘车引导」', false);
+    return;
+  }
+  if(sopPending){ haptic(HAPTIC_TOUCH); speak('正在处理，请稍等', false); return; }
+  const mySid = sid;
+  sopPending = true;
+  stopSpeak();
+  setResult('<span class="ph">正在退回上一步…</span>');
+  try{
+    const fd = new FormData();
+    fd.append('session_id', mySid);
+    const j = await post('/api/sop/back', fd);
+    if(sid !== mySid) return;                   // 已退出/已换流程，丢弃这份结果
+    renderSop(j);
+    setResult(`<div class="stepbar"><span class="badge">第 ${esc(j.index)} 步，共 ${esc(j.total_steps)} 步</span>`
+            + `<span>${esc(j.step.title)}</span></div>${esc(j.speech)}`);
+    speak(j.speech);
+  }finally{
+    sopPending = false;
+  }
+});
+
+bindAccessible($('#btnQuit'),   '退出或重新开始流程', async ()=>{   // F12 退出/重来
+  stopSpeak();
+  /* 必须带口令头，否则部署版上这一步静默 401、后端会话残留（见 authHeaders 的说明）。
+     删除失败也不该打断退出 —— 对用户来说"流程已退出"这个结果才是重要的。 */
+  if(sid){
+    try{ await fetch(API + '/api/sop/' + sid, {method:'DELETE', headers: authHeaders()}); }catch(e){}
+  }
+  sid = null; totalSteps = 0; curIndex = 0;
+  $('#sopCard').style.display = 'none';
+  setResult('<span class="ph">流程已退出。可以重新选择「就医引导」或「乘车引导」。</span>');
+  speak('流程已退出', false);
+}, {
+  /* 退出会 DELETE 掉后端会话，已走过的步骤全部清空。
+     视障用户重新走一遍流程的成本（时间 + 心理）远高于多按一下，
+     而且这个按钮紧挨着"已到达，直接下一步"，误触概率很高。 */
+  confirm: '要退出当前流程吗？再点一次确认',
+});
+
+/* ---------- F16 呼叫人工志愿者 ---------- */
+bindAccessible($('#btnHelp'), '呼叫人工志愿者', async ()=>{
+  stopSpeak();
+  setResult('<span class="ph">正在呼叫志愿者…</span>');
+  const fd = new FormData();
+  fd.append('text', $('#q').value || '');
+  if(sid) fd.append('session_id', sid);
+  const j = await post('/api/help', fd);
+  setResult(esc(j.speech) + '<div class="ticket">'
+          + '求助号：' + esc(j.queue_no) + '｜状态：' + esc(j.status)
+          + '｜联系人：' + esc(j.helper_name) + '｜电话：' + esc(j.helper_phone)
+          + '</div>');
+  speak(j.speech);
+}, {
+  /* 呼叫志愿者是全站唯一一个"对外产生真实后果"的动作：
+     它会把求助记进工单队列，志愿者可能真的打电话过来。
+     误触一次的代价远高于多按一下，必须二次确认。 */
+  confirm: '要呼叫人工志愿者吗？再点一次确认',
+});
+
+/* ---------- F08 按住说话 ----------
+   这个按钮的交互是"按住"，与触摸探索的"抬手执行"相反，
+   因此不做 bindAccessible，只补上触碰时的报名字和震动。 */
+const vb = $('#btnVoice');
+let rec = null, chunks = [], recording = false, recStart = 0, recTick = null;
+/* recLimit：录音最长时长的计时器；recMime：这一份录音的真实格式。
+   详见下面两个常量的说明。 */
+let recLimit = null, recMime = '';
+
+/* 短于此时长视为误触：不做识别，直接告诉用户怎么用。
+   在发请求之前拦下，既省一次调用，也避免用户收到一句莫名其妙的
+   "没有听清"——那会让他以为是自己说话的问题，而不是手没按稳。 */
+const REC_MIN_MS = 400;
+
+/* 录音最长时长。上游的语音识别有 30 秒硬上限（官方限制），
+   而"按住不放"这个手势本身也容易被卡住 —— 手抖、走神、被路况打断，
+   录音会一直开着。到点自动收尾并**说明原因**，比让用户对着手机
+   说上两分钟、最后收到一句"失败"要好得多。留 5 秒余量给转码与上传。 */
+const REC_MAX_MS = 25000;
+
+/* ================================================================
+   把录到的音频转成 16-bit PCM WAV
+
+   为什么非转不可：语音识别只收 wav / mp3，而 MediaRecorder 在
+   Chrome 上录的是 webm/opus、Safari 上是 mp4/aac。
+   实测把 webm 原样上传，上游直接 400 / code 1214
+   「transcriptions不支持当前文件格式」—— **不转码这条路根本走不通**。
+   这才是"按住说话识别不出来"的根因，跟识别精度无关。
+
+   怎么转：不引入任何库，借浏览器自带的解码器 ——
+   decodeAudioData 能把 webm/opus 与 mp4/aac 都解成 PCM，
+   我们再按 WAV 规格手工写 44 字节头 + PCM 数据。全程不依赖网络。
+
+   采样率保持原样、不做重采样：实测 8k / 16k / 48k 的**同一段语音**
+   上传后识别结果完全一致，重采样纯属多余 ——
+   而少一段自己写的信号处理代码，就少一类"识别不准"的可能来源。
+   ================================================================ */
+async function recToWav(blob){
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if(!AC || !blob || !blob.size) return null;
+  let ac = null;
+  try{
+    ac = new AC();
+    /* 每次都重新取 arrayBuffer：decodeAudioData 会**接管并清空**
+       传入的那个 ArrayBuffer，复用同一个会直接抛异常。 */
+    const buf = await ac.decodeAudioData(await blob.arrayBuffer());
+    const chs = buf.numberOfChannels, n = buf.length, rate = buf.sampleRate;
+    if(!n || !rate) return null;
+    /* 多声道先混成单声道。手机通常是 1 声道，但桌面端常见 2 声道，
+       而 WAV 头里我们声明的是 1 声道 —— 不混的话播放速度会变成两倍，
+       识别结果全错，而且从现象上完全看不出原因。 */
+    const mono = new Float32Array(n);
+    for(let c = 0; c < chs; c++){
+      const d = buf.getChannelData(c);
+      for(let i = 0; i < n; i++) mono[i] += d[i] / chs;
+    }
+    const out = new ArrayBuffer(44 + n * 2), v = new DataView(out);
+    const tag = (off, s)=>{ for(let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+    tag(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); tag(8, 'WAVE');
+    tag(12, 'fmt '); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true);              // 1 = PCM（未压缩）
+    v.setUint16(22, 1, true);              // 单声道
+    v.setUint32(24, rate, true);           // 采样率
+    v.setUint32(28, rate * 2, true);       // 字节率 = 采样率 × 块对齐
+    v.setUint16(32, 2, true);              // 块对齐 = 声道数 × 位深/8
+    v.setUint16(34, 16, true);             // 位深
+    tag(36, 'data'); v.setUint32(40, n * 2, true);
+    for(let i = 0, o = 44; i < n; i++, o += 2){
+      const s = mono[i] < -1 ? -1 : (mono[i] > 1 ? 1 : mono[i]);
+      v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return out;
+  }catch(e){
+    /* 解不出来不是致命错误：返回 null，调用方退回上传原始音频，
+       由后端把"格式不支持"翻译成一句准确的人话 —— 比在这里静默失败强。 */
+    return null;
+  }finally{
+    try{ if(ac) ac.close(); }catch(e){}
+  }
+}
+
+/* ================================================================
+   语音直达 —— "按钮按不准"的根本解：让用户根本不需要按按钮
+
+   这是本项目最应该先做好的一条通道。理由很直接：
+   对看不见屏幕的人来说，**说话永远比在屏幕上找一个位置更自然、更可靠**。
+   只要"按住说话"能直达每一个功能，按钮按不准这件事就不再是阻塞性问题。
+
+   为什么在前端再做一次关键词匹配，而不是只信后端的意图分类：
+   免费小模型在嘈杂环境下的意图分类并不稳，而"读一下""去医院"这类词
+   一旦被分类错，用户会以为整个功能坏了 —— 他没有任何办法看出是识别错了。
+   本地匹配是确定性的：错了能复现、能改、能加测试。
+
+   为什么放在"按住说话"里而不是做唤醒词：
+   纯 H5 无法在后台持续监听麦克风（浏览器安全策略），所以"喊一声就响应"
+   做不到。诚实地说清楚这一点，比做一个时灵时不灵的唤醒词要好。
+   ================================================================ */
+const VOICE_ROUTES = [
+  /* 顺序要紧：先匹配到的先赢。
+     "帮我看看这盒药上写的什么"里同时含"看看"（场景）与"药"（读文字），
+     必须让更具体的"读文字"赢，否则用户想读药盒却收到一段环境描述 ——
+     这正是用户实测时反馈过的那类困惑。
+     同理"再念一遍"里含"念"，重听必须排在读文字之前。 */
+
+  /* ① 停止播报 —— 必须排在最前。
+     用户说"别念了"的时候正在播报，如果被后面任何一条规则命中，
+     触发的动作会用 speak() 打断当前播报再念新的 —— 听起来像"根本没停"，
+     与他的意图正好相反。stopSpeak 不写 lastSpeech，所以重听仍然有效。 */
+  { re: /(停止播报|别念了|不要说了|别说了|安静一下|停一下|先别说|不用念了)/,
+    name: '停止播报',
+    run: ()=>{ stopSpeak(); haptic(HAPTIC_CANCEL); } },
+
+  { re: /(重听|再说一遍|再念一遍|刚才说什么|没听清|重复一遍|再报一遍)/,
+    name: '重听上一次播报',
+    run: ()=>{ if(lastSpeech) speak(lastSpeech); else speak('现在还没有可以重听的内容', false); } },
+  /* 距离表：方位在「注意」段里是一句连读的口语，用户容易只记住最后一条。
+     距离表把它变成**结构化复读**（"共 3 条：12点 6步，1点 6步，11点 15步"），
+     而且屏幕上那些 <b> 本身摸不到、也读不出，全盲用户只能靠这条语音直达。
+     用户说一句就能逐条听清，不必先摸到距离表再抬手指。 */
+  { re: /(距离表|方位表|几个方向|几个方位|全部方向|全部方位|还有哪|另外的方向)/,
+    name: '听全部距离方位',
+    run: ()=>{
+      const t = distText();
+      speak(t || '现在还没有距离数据，先拍一张照片', false);
+    } },
+  /* ② 读文字的四种子类型，排在通用"读文字"之前。
+     用户说"读一下这盒药"时，要的不只是"把字念出来"，而是**按药品的方式读**
+     （认成分、用法、禁忌）。两者走的是同一张照片，但提示词与结论完全不同，
+     所以这一层判断必须发生在按钮之前，而不是让用户拍完再自己发现读错了。 */
+  { re: /(药盒|药品|吃药|服药|说明书|剂量|用法用量|这盒药|这瓶药)/,
+    name: '读文字，药品', run: ()=>{ pickDocType('drug'); runPick('#btnRead'); } },
+  { re: /(指示牌|牌子|门牌|路牌|标牌|招牌|导览)/,
+    name: '读文字，指示牌', run: ()=>{ pickDocType('sign'); runPick('#btnRead'); } },
+  { re: /(价签|标价|价格|多少钱|贵不贵)/,
+    name: '读文字，价签', run: ()=>{ pickDocType('price'); runPick('#btnRead'); } },
+  { re: /(单据|票据|发票|收据|化验单|检查报告|报告单)/,
+    name: '读文字，单据票据', run: ()=>{ pickDocType('doc'); runPick('#btnRead'); } },
+
+  /* 退回上一步：视障用户判断"到了没有"只能靠听，误判概率远高于明眼用户。
+     给它一条不按键的纠错通道，比要求用户去屏幕里找一个按钮现实得多。 */
+  { re: /(退回去|退回上一步|退回|上一步|退一步|返回上一步|弄错了|判错了)/,
+    pick: '#btnBack', name: '退回上一步' },
+  { re: /(就医|医院|挂号|看病|诊室|取药|门诊)/,           pick: '#btnSopMedical', name: '就医引导' },
+  { re: /(乘车|公交|地铁|坐车|大巴|班车|站台)/,           pick: '#btnSopTransit', name: '乘车引导' },
+  /* 求助的口语说法比书面说法多得多。原规则只有"帮忙/求助/人工/志愿者"，
+     于是"帮我叫个人""我想找人"这两句**最自然**的求助话全部落空 ——
+     而它们出现在用户最着急的时刻，落空的代价也最大。
+     注意别只加"叫人"：口语里常说"叫**个**人""帮我叫一个"，
+     中间会被一个字断开，写死"叫人"照样漏。所以按短语前缀收。
+     反过来，多收几个近义说法几乎没有误伤风险：这些话除了求助没有别的意思。 */
+  { re: /(救命|紧急|求助|帮忙|帮帮我|有人吗|志愿者|人工|找人|叫个|叫一个|帮我叫|帮个忙|帮找)/,
+                                                          pick: '#btnHelp',       name: '呼叫人工志愿者' },
+  /* "下一步"必须排在"下一个功能"之前 —— 否则含"下一个"的那条会先把它吃掉，
+     用户说"下一步"结果只是移动了焦点，SOP 一动不动。 */
+  { re: /(下一步|好了|到了|完成|继续|到没有|到了吗)/,      pick: '#btnManual',     name: '已到达，直接下一步' },
+  { re: /(退出|重来|重新开始|取消流程|结束流程)/,          pick: '#btnQuit',       name: '退出流程' },
+  { re: /(读|念|文字|字|写|说明|药品|药|价格|价签|牌子|指示牌|单据|票据)/,
+                                                          pick: '#btnRead',       name: '拍照读文字' },
+  { re: /(周围|前面|前方|环境|有什么|障碍|路况|看看|看一下|拍照|这是什么)/,
+                                                          pick: '#btnScene',      name: '拍照看看周围' },
+
+  /* ③ 播报本身的设置。视障用户对语速与音色的需求差异极大（有人嫌快、
+     有人嫌慢、有人听男声更清楚），而这几个按钮藏在设置卡片里 ——
+     要说"慢一点"的时候，正是他听不清、没法在屏幕上找按钮的时候。 */
+  { re: /(慢一点|说慢点|慢点儿|太快了|听不过来)/,           pick: '#btnSlower',    name: '说得慢一点' },
+  { re: /(快一点|说快点|快点儿|太慢了)/,                    pick: '#btnFaster',    name: '说得快一点' },
+  /* ④ 顺序导航本身。说"下一个功能"比摸黑找屏幕底部那三个键可靠。
+     放在最后：它们最泛，让所有具体功能先匹配。 */
+  { re: /(上一个功能|前一个功能|上一个|前一个)/,            pick: '#btnPrev',      name: '上一个功能' },
+  { re: /(下一个功能|后一个功能|下一个|后一个)/,            pick: '#btnNextItem',  name: '下一个功能' },
+];
+
+/* 没匹配上时不能装死。用户说了话却没反应，会以为语音功能坏了；
+   这里直接把"可以说什么"报出来，等于把菜单念给用户听。 */
+const VOICE_MENU = '可以说：看看周围、读一下文字、读这盒药、去医院、坐公交、'
+                 + '下一步、退回上一步、距离表、重听一遍、慢一点、别念了、退出。'
+                 + '也可以直接用手指在屏幕上找按钮。';
+
+/* 把读文字的类型选中。复用页面自己的 selectDocType，
+   这样视觉高亮、aria-pressed、震动回执与手指点击完全一致 ——
+   语音与触摸只是两条入口，落到同一条实现上，行为就不可能分家。 */
+function pickDocType(t){
+  const chip = chipEls.filter(c=>c.dataset.t === t)[0];
+  if(chip) selectDocType(chip);
+}
+
+/* 语音里"先选类型、再执行"的两步动作。
+   必须等类型播报念完再点执行：speak() 的第一步是 cancel()，
+   而 btnRead 的处理函数开头就会 speak('我看一下，请稍等') ——
+   立刻点下去的话，"已选择药品"会被当场掐断，用户永远听不到
+   自己设的类型到底生效了没有。 */
+function runPick(sel){
+  afterSpeech(()=>{ const el = $(sel); if(el) el.click(); }, 4000);
+}
+
+function findVoiceRoute(text){
+  const t = String(text || '');
+  if(!t) return null;
+  for(const r of VOICE_ROUTES) if(r.re.test(t)) return r;
+  return null;
+}
+
+function runVoiceRoute(r){
+  /* 有些语音意图没有对应的按钮（比如"重听"），直接在路由里带一个 run。
+     有按钮的一律走 click —— click 会经过 bindAccessible 的统一入口。 */
+  if(typeof r.run === 'function'){ r.run(); return true; }
+  const el = $(r.pick);
+  if(!el) return false;
+  /* 走 click 而不是直接调动作函数：click 会经过 bindAccessible 的统一入口，
+     于是防重复提交、执行锁、二次确认这些保护一个都不会绕过。
+     （"呼叫人工志愿者"仍然需要二次确认 —— 语音识别本来就可能听错，
+       让它一句话就把求助发出去，风险比多点一下大得多。） */
+  el.click();
+  return true;
+}
+
+/* 等一句话念完再继续（最多等 maxMs）。
+   为什么需要：speak() 内部第一步就是 cancel()，所以"复述确认"之后若立刻
+   触发动作，那句"你说的是××"会被自己的下一步当场掐断 ——
+   而这句话正是用户在嘈杂环境里发现"识别错了"的唯一机会。
+   宁可晚半秒执行，也不能让用户失去这个纠错窗口。 */
+function afterSpeech(fn, maxMs){
+  if(!TTS_OK || !speaking){ setTimeout(fn, 120); return; }
+  const t0 = Date.now();
+  const timer = setInterval(()=>{
+    if(!speaking || Date.now() - t0 > (maxMs || 6000)){ clearInterval(timer); fn(); }
+  }, 120);
+}
+
+/* 把录音送去识别。
+ *
+ * 为什么独立成一个函数，而不是继续写在 rec.onstop 里：
+ * 原来 post('/api/asr') 失败时被 `catch(e){ /* post 内已提示 *\/ }` 吞掉，
+ * 而结果区同时写着"轻触这里可以重试" —— 轻触却没有任何反应。
+ * 那是全站唯一一条"承诺了却不兑现"的路径，对全盲用户就是彻底迷路。
+ * 现在失败时把"重发同一段音频"注册为 pendingRetry，轻触结果区真的会重发
+ * （重发比"重新录一遍"更合理：失败多半是网络抖动，音频本身还在）。
+ */
+async function sendAudio(fd){
+  try{
+    const j = await post('/api/asr', fd);
+    /* 后端没有听写引擎时（未装 FunASR），必须说清"这里没有这个能力"，
+       而不是"没有听清" —— 后者会让用户反复重说，方向完全错。
+       这不是假想情形：部署环境当前就处于这个状态（见 /api/meta 的 asr.available）。 */
+    if(j.asr_available === false){
+      $('#q').value = '';
+      setResult('<span class="ph">这台服务器当前没有语音识别引擎，'
+              + '请改用下方输入框打字，或直接点「拍照看看周围」。</span>');
+      haptic(HAPTIC_ERR);
+      speak('这里暂时不能听写，请用下面的按钮或输入框', false);
+      return;
+    }
+    $('#q').value = j.text || '';
+    const it = (j.intent && j.intent.intent) || '-';
+    const route = findVoiceRoute(j.text);
+    setResult('识别结果：' + esc(j.text || '（空）') + '\n意图：' + esc(it));
+    /* 复述确认：视障用户常在嘈杂环境，识别错了直接执行比不执行更危险。
+       先说完这句，再执行 —— 见 afterSpeech 的说明。
+       必须 remember:false —— 这句是**交互提示**不是"内容"。
+       写进 lastSpeech 的后果很隐蔽：用户接着说"再说一遍"，
+       重播的会是"你说的是：再说一遍"这句复述本身，
+       而不是他真正想再听一遍的那条识别结果。 */
+    speak(j.text ? ('你说的是：' + j.text) : '没有听清，请再说一次', false);
+    afterSpeech(()=>{
+      /* 语音直达优先走本地关键词（确定性）；本地没匹配上再退回后端意图分类；
+         两条都走不通就把"可以说什么"的菜单念出来，绝不装死。 */
+      if(route){ runVoiceRoute(route); return; }
+      if(!j.text) return;
+      if(it === 'sop_medical') startSop('sop_medical');
+      else if(it === 'sop_transit') startSop('sop_transit');
+      else if(it === 'help_human') $('#btnHelp').click();
+      else speak(VOICE_MENU, false);
+    });
+  }catch(e){
+    /* post() 已经把失败原因（人话）写进结果区了，这里只负责补上重试通道。
+       用箭头函数包一层而不是直接传 sendAudio：pendingRetry 是无参调用。 */
+    pendingRetry = ()=>sendAudio(fd);
+  }
+}
+
+async function startRec(){
+  if(recording) return;
+  stopSpeak();
+  /* 认领预申请的那一份麦克风（见 vbArmRec 的说明）。
+     必须**立刻**把它从 vbMicP 摘下来：松手时 vbStopHold 会调 dropVBStream
+     关掉"还挂在 vbMicP 上没被用掉的那一份"，而我们正要拿它去录音 ——
+     摘了之后那个清理逻辑就碰不到它了。 */
+  const pre = vbMicP; vbMicP = null;
+  if(!window.MediaRecorder || !navigator.mediaDevices){
+    releaseMic(await pre);
+    setResult('<span class="ph">当前浏览器不支持录音（非 HTTPS 地址或微信内置浏览器常见）。'
+            + '请在下方输入框直接打字，再点「拍照看看周围」。</span>');
+    haptic(HAPTIC_ERR); speak('当前浏览器不能录音，请用输入框打字', false);
+    return;
+  }
+  let s = null;
+  try{
+    const r = await (pre || requestMic());
+    if(r && r.ok) s = r.stream;
+  }catch(e){ s = null; }
+  if(!s){
+    /* 拒绝授权 / 麦克风被别的应用占用：必须说出来。
+       原实现用的是 .then() 且没有 .catch —— 用户点了"拒绝"之后，
+       按钮文字已经变成"松开结束"，却什么都没发生，也没有任何提示。
+       对看不见屏幕的用户，"按了没反应"是最糟糕的失败模式。 */
+    haptic(HAPTIC_ERR);
+    setResult('<span class="ph">没有拿到麦克风权限。请在浏览器里允许使用麦克风后重试，'
+            + '或改用下方输入框打字。</span>');
+    speak('没有拿到麦克风权限，可以改用输入框打字', false);
+    return;
+  }
+  /* 明确挑一个录制格式，而不是让浏览器随便选。
+     不指定的话 Safari 给 mp4/aac、Chrome 给 webm/opus，我们后面都会转码，
+     但知道**原格式**才能在转码失败时给后端一个准确的扩展名 ——
+     否则它只能凭魔数猜，而猜错就会把"格式问题"报成"没听清"。 */
+  const CAND = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+  let mt = '';
+  for(const c of CAND){
+    try{
+      if(window.MediaRecorder.isTypeSupported && window.MediaRecorder.isTypeSupported(c)){ mt = c; break; }
+    }catch(e){}
+  }
+  rec = mt ? new MediaRecorder(s, {mimeType: mt}) : new MediaRecorder(s);
+  recMime = rec.mimeType || mt || '';
+  chunks = [];
+  rec.ondataavailable = e=>chunks.push(e.data);
+  rec.onstop = async ()=>{
+    s.getTracks().forEach(t=>t.stop());
+    const raw = new Blob(chunks,{type: recMime || 'audio/webm'});
+    /* 双重拦截：时长过短，或数据量小到承载不了一句话。
+       只按时长判会漏掉常见情形 —— 触摸探索时手指在按钮上停留超过
+       400ms 是常事，松手后就会把一个空音频送去识别，用户得到的
+       回答是"没有听清"，而真正的原因是他根本没打算说话。 */
+    if(Date.now() - recStart < REC_MIN_MS || raw.size < 1500){
+      haptic(HAPTIC_ERR);
+      speak('没有开始录音。请按住按钮不放，说完再松开', false);
+      return;
+    }
+    /* 松手到结果回来之间有一段空档（转码 + 识别 + 网络）。对看不见屏幕的
+       用户，这段时间毫无反馈的话，他会怀疑"是不是我没松开""它听到没有"，
+       最常见的反应是把整句话再说一遍 —— 识别结果里就多了一串重复内容。
+       所以这里先把状态写在结果区（也顺带滚到可见）。 */
+    setResult('<span class="ph">正在识别刚才的话…</span>');
+    const wav = await recToWav(raw);
+    const fd = new FormData();
+    /* 转码成功传 wav；失败则原样传，让后端把"格式不支持"换成一句
+       准确的人话，而不是让用户以为是自己没说清。 */
+    if(wav){
+      fd.append('audio', new Blob([wav], {type:'audio/wav'}), 'a.wav');
+    }else{
+      fd.append('audio', raw, /mp4/.test(recMime) ? 'a.mp4' : 'a.webm');
+    }
+    await sendAudio(fd);
+  };
+  rec.start(); recording = true; recStart = Date.now();
+  /* 录音期间每 2.5 秒一次心跳震动：这是"还在录"唯一的持续反馈。
+     不能说语音（会被自己的麦克风录进去），也不能靠屏幕（用户看不见）。
+     没有它的话，一旦录音轨被系统静默中断（来电、其他应用抢占麦克风），
+     用户会一直举着手机说完，最后收到一句"没有听清"——而原因根本不是他没说清。 */
+  clearInterval(recTick);
+  recTick = setInterval(()=>haptic(HAPTIC_REC_TICK), 2500);
+  /* 到点自动收尾。见 REC_MAX_MS 的说明：按住不放很容易被卡住，
+     而超过 30 秒上游会直接拒收。 */
+  clearTimeout(recLimit);
+  recLimit = setTimeout(()=>{
+    if(!recording) return;
+    haptic(HAPTIC_CANCEL);
+    speak('已经录满 25 秒，我现在开始识别', false);
+    endRec();
+  }, REC_MAX_MS);
+  /* 用双短震而不是语音提示"开始录音"：原实现会在触摸时播报
+     "按住说话，松开结束"，而录音已经同时开始 —— 这句自己的 TTS
+     被录进了麦克风，识别结果里混着机器音。震动不经过麦克风，是干净通道。 */
+  haptic(HAPTIC_REC);
+  vb.textContent = '松开结束'; vb.classList.remove('sec'); vb.classList.add('warn');
+  setResult('<span class="ph">正在录音…松开手指结束。</span>');
+}
+
+function endRec(){
+  if(rec && recording){
+    recording = false;
+    try{ rec.stop(); }catch(e){}
+    clearInterval(recTick); recTick = null;
+    clearTimeout(recLimit); recLimit = null;
+    vb.textContent = '按住说话'; vb.classList.add('sec'); vb.classList.remove('warn');
+    /* 松开必须有回执。识别要等一两秒，中间若毫无反馈，用户会怀疑
+       "我是不是没松开""它是不是没听见"，最常见的反应是把整句话再说一遍，
+       于是识别结果里出现一串重复内容。 */
+    speak('录音结束，正在识别', false);
+  }
+}
+
+/* ================================================================
+   按住说话：先报名字，念完再开麦
+
+   原来这里有一条"保护性"的设计：按下即开始录音，所以**不敢播报**
+   （任何语音都会被自己的麦克风录进去），改成只震动 + 高亮。
+   保护本身是对的，但代价被低估了 —— 不播报意味着这个按钮
+   在触摸探索里等于不存在：用户摸到它，命中的是"空白区域"分支，
+   听到"这里是空白"；顺序导航里也没有它（压根没注册）。
+   而它偏偏是整个应用**最重要的输入通道**（见 VOICE_ROUTES 的说明）。
+
+   真正的矛盾是"按下即开麦"这个时机太早，而不是"不该播报"。所以：
+     按住（pointerdown）→ 先报名字（约 1 秒）→ 名字念完的那一刻才开麦。
+   两个目标就都不冲突了：
+     · 用户听见"按住说话"，知道自己找对了地方（探索需求满足）；
+     · 自己的提示音在开麦之前就结束了，不会混进音频（原来那个老问题也解决了）；
+     · 等待期正好被播报填满，用户不会觉得"按了没反应"。
+   开麦时给一声双短震（HAPTIC_REC）—— 震动不经过麦克风，是干净通道，
+   用户能明确感知"现在开始说"。
+
+   兜底 1500ms：TTS 万一卡住不结束，也不能让录音永远开不起来。
+   ================================================================ */
+let vbHold = false, vbArmTimer = null, vbHoldStart = 0;
+
+/* "轻点"的长度上限。低于它的按下一律当成"点一下看看这是什么"，
+   不录音 —— 否则用户每次轻点「执行」都会录进一段无意义音频。 */
+const VB_TAP_MAX_MS = 300;
+
+/* ================================================================
+   开麦时机：从"等播报念完"改成"固定上限 + 主动掐断"
+
+   原实现是"名字念完才开麦"（判据 `!speaking`），初衷是避免自己的 TTS
+   被麦克风录进去。这个顾虑是真的，但代价被低估了：
+   「按住说话」四个字要念 1.1~1.3 秒，而用户的肌肉记忆是**按下就说**
+   （微信、所有语音输入都是这样）。说"帮我看看这是什么"，
+   前 1 秒被切掉，识别出来是"是什么" —— 而用户只会得出"识别不准"的结论，
+   根本不会想到是自己按早了。这是全站最重要的输入通道，丢 1 秒等于不能用。
+
+   1 秒的话被丢掉是致命的，0.4 秒的机器音只是噪声 —— 两者代价不对等。
+   所以：判定为"按住"（>VB_TAP_MAX_MS）之后再等 VB_OPEN_MS 就开麦，
+   **不管播报有没有念完**，开麦时由 startRec() 里的 stopSpeak() 把它掐断。
+   用户实际听到的是前半句"按住"—— 恰好是这个控件最关键的动作词。
+   （顺序导航选中它时不受影响：那里不录音，会完整念出"按住说话"。）
+
+   顺手把麦克风申请提前：getUserMedia 要 100~400ms（授权、音频栈启动），
+   原来这段时间全额加在"按下 → 真正开始录"上。现在一判定为"按住"就并行发出请求，
+   等 VB_OPEN_MS 到点时多数设备已经就绪 —— 丢的那 0.4 秒不再叠加启动耗时。
+   ================================================================ */
+const VB_OPEN_MS = 380;
+
+/* 预申请的麦克风。resolve 成 {ok, stream} / {ok:false, error}，**永不 reject** ——
+   否则用户在"还没开麦"时松手，会留下一个没人处理的 rejection。 */
+let vbMicP = null;
+
+function requestMic(){
+  try{
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+      return Promise.resolve({ ok:false, error:new Error('no getUserMedia') });
+    return navigator.mediaDevices.getUserMedia({audio:true}).then(
+      (s)=>({ ok:true, stream:s }),
+      (e)=>({ ok:false, error:e })
+    );
+  }catch(e){ return Promise.resolve({ ok:false, error:e }); }
+}
+function prewarmMic(){
+  if(!vbMicP) vbMicP = requestMic();
+  return vbMicP;
+}
+/* 关掉一份已申请到、但没人用的流。开着不关的话手机上会一直亮录音指示。 */
+function releaseMic(r){
+  if(!r) return;
+  Promise.resolve(r).then((x)=>{
+    if(x && x.ok && x.stream) try{ x.stream.getTracks().forEach(t=>t.stop()); }catch(e){}
+  }).catch(()=>{});
+}
+/* 松手时若预申请到的流还没被录音认领，关掉它。 */
+function dropVBStream(){
+  if(!vbMicP) return;
+  const p = vbMicP; vbMicP = null;
+  releaseMic(p);
+}
+
+function vbBeginHold(){
+  vbHold = true; vbHoldStart = Date.now(); vbArmRec();
+}
+
+function vbStopHold(){
+  vbHold = false;
+  if(vbArmTimer){ clearInterval(vbArmTimer); vbArmTimer = null; }
+  /* recording 为假 = 这一份预申请还没被 startRec 认领，得我们自己关。
+     正在录的那一份由 rec.onstop 负责停轨，不能在这里动。 */
+  if(!recording) dropVBStream();
+}
+
+function vbArmRec(){
+  if(vbArmTimer || recording) return;
+  const t0 = Date.now();
+  vbArmTimer = setInterval(()=>{
+    /* 中途松手 = 只是想摸一下听听名字，不是要说话。不录音，也不报错。 */
+    if(!vbHold){ clearInterval(vbArmTimer); vbArmTimer = null; dropVBStream(); return; }
+    /* 前 300ms 不检查：那正是"轻点"的长度。 */
+    if(Date.now() - t0 < VB_TAP_MAX_MS) return;
+    /* 已确定是"按住"：立刻并行申请麦克风，把授权/启动耗时藏进等待窗口 */
+    prewarmMic();
+    if(Date.now() - t0 >= VB_OPEN_MS){
+      clearInterval(vbArmTimer); vbArmTimer = null;
+      if(vbHold) startRec();
+    }
+  }, 60);
+}
+
+/* 触摸反馈只给震动与高亮（此时还没开麦，但名字由触摸探索统一播报，
+   不在这里重复念一遍）。 */
+vb.addEventListener('touchstart', ()=>{
+  haptic(HAPTIC_TOUCH); vb.classList.add('focusring');
+}, {passive:true});
+vb.addEventListener('touchend', ()=> vb.classList.remove('focusring'), {passive:true});
+
+vb.addEventListener('pointerdown', vbBeginHold);
+/* 结束监听挂在 window 而不是按钮自身：
+   鼠标拖出按钮再松开时，pointerup 的目标是按钮之外的元素 ——
+   挂在按钮上就会漏掉，recording 永久卡在 true，
+   而 startRec 开头正好有 if(recording) return：用户从此再也录不了音，
+   界面上看起来却只是"识别不出来"。endRec 自带幂等判断，重复调用安全。 */
+window.addEventListener('pointerup', ()=>{ vbStopHold(); endRec(); });
+window.addEventListener('pointercancel', ()=>{ vbStopHold(); endRec(); });   // 来电、系统手势打断
+
+/* 注册进触摸探索，并且**要进顺序导航**（见 bindAnnounceOnly 的 opts.nav）。
+   按住说话是这个应用最重要的输入通道，不能只靠"在整页里摸到它"。 */
+bindAnnounceOnly($('#btnVoice'), '按住说话', ()=>{}, { nav: true });
+
+/* ================================================================
+   顺序导航的项序 = 页面的从上到下顺序
+
+   这里**故意什么都没有**，因为顺序不需要维护：
+   navigableTargets() 直接按 DOM 文档顺序排（见 domOrder）。
+
+   为什么最终选了"照抄版式"，而不是按使用频率重排：
+   ① 用户在页面上看到的顺序，和他听到的顺序必须是同一个。
+      两者不一致时，低视力用户按「下一个」会看到选中框在页面上下乱窜，
+      全盲用户则完全没法用"我手指摸到哪儿了"来校准"现在这是第几项"——
+      而这个校准能力恰恰是顺序导航存在的意义。
+   ② 曾经用一张手写的 NAV_ORDER 表按"频率 + 紧急度"重排：把「拍照看看周围」
+      放第 1、「呼叫人工志愿者」放第 2。副作用是每改一次页面就得同步改表，
+      忘了改就静默错序 —— 这类"两处真理"的设计迟早会腐烂。
+   ③ 紧急项的可达性因此改为由底栏「执行」键的**长按**承担（见 lpBegin）：
+      无论焦点停在哪一项，长按 1.5 秒都直接呼叫志愿者。
+      这比"排在第 2 位"更可靠 —— 它根本不依赖用户按对多少次「下一个」。
+   ================================================================ */
+
+/* ================================================================
+   消灭"摸到却不知道是什么"的区域
+
+   这条是承接"按钮能不能被精确按到"的同一类问题：按不准的另一面是
+   **摸到了却得不到解释**。用户摸到分组标题、补充说明输入框、SOP 进度条时，
+   原来都会走到空白提示，被统一告知"这里是空白区域"——
+   而对用户来说它明明有字、有框，这个回答等于说"我也看不懂"。
+   这类"信息性区域"统一注册成"只报名字不执行"，摸到就说明它的用途。
+   ================================================================ */
+document.querySelectorAll('.sec-title').forEach(el=>{
+  bindAnnounceOnly(el, el.textContent.trim() + '。这是一组功能的标题，下面的按钮都属于这一组');
+});
+
+/* 补充说明输入框：它原来是整页唯一"摸到没反应"的输入控件。
+   全盲用户主要靠"按住说话"，但打字这条路不能被藏起来 ——
+   尤其在嘈杂环境（路边、地铁）语音识别很差时，打字是唯一可靠通道。 */
+bindAnnounceOnly($('#q'), ()=>{
+  const base = '补充说明输入框，可以不填。'
+             + '摸到它之后可以用系统键盘打字，例如"挂号窗口在哪"。'
+             + '也可以按住下面的「按住说话」用语音说';
+  return $('#q').value ? base + '。当前已经写了：' + $('#q').value : base;
+}, ()=>{ speak('补充说明输入框。' + ($('#q').value ? '当前写着：' + $('#q').value : '现在是空的，可以不填'), false); });
+
+/* SOP 进度条：摸到它应当重新念一遍**当前**步骤，而不是念"第 1 步".
+   （名字用函数现算 —— 写死的进度是错误信息，比不报更糟。） */
+bindAnnounceOnly($('#sopStep'), ()=>{
+  if(!sid || !totalSteps) return '流程进度。当前没有进行中的流程';
+  return `流程进度：第 ${curIndex} 步，共 ${totalSteps} 步。轻触可以重听这一步要做什么`;
+}, ()=>{
+  if(!sid || !totalSteps){ speak('当前没有进行中的流程', false); return; }
+  if(lastSpeech) speak(lastSpeech);
+  else speak(`第 ${curIndex} 步，共 ${totalSteps} 步`, false);
+});
+
+/* ================================================================
+   播报设置：把"选声音"的权力交回用户
+
+   自动挑「最温柔的那个」是个猜测。温柔与否很主观，更要紧的是
+   各设备装的语音差别极大 —— 某些手机上只有一个很生硬的合成音。
+   自动挑的不合意时，用户不会认为"我的设备语音不好"，
+   只会认为"这个应用的播报就是这么难听"，然后就放弃了。
+   而语音播报是视障用户**唯一的输出通道**，放弃它等于放弃整个应用。
+   所以给他三个按钮：能试、能换、能调速。
+   ================================================================ */
+function shortVoiceName(v){
+  if(!v) return '系统默认声音';
+  let n = String(v.name || v.voiceURI || '');
+  n = n.replace(/^Microsoft\s+/i, '')
+       .replace(/\s*[-–]\s*Chinese.*$/i, '')
+       .replace(/\s*\([^)]*\)\s*/g, ' ')
+       .replace(/\s+/g, ' ')
+       .trim();
+  return n || '系统默认声音';
+}
+
+function refreshSpkInfo(){
+  const el = $('#spkInfo');
+  if(!el) return;
+  const list = softVoices();
+  let msg;
+  if(!TTS_OK){
+    msg = '当前浏览器不支持语音播报。请改用 Chrome、Safari 或 Edge 打开。';
+  }else if(!list.length){
+    /* voicesLoaded=false 与"这台设备真没装中文语音"是两件事，
+       但用户能做的动作不同：前者等一下就好，后者要去系统设置里装。 */
+    msg = voicesLoaded
+        ? '这台设备上没找到中文语音，只能使用系统默认的发音。'
+        : '正在读取可用声音，稍等一下再试。';
+  }else{
+    /* 不再报"第几个、共几个可选"。那串数字是给「换个声音」按钮当坐标用的，
+       按钮按用户要求撤掉之后，它就成了用户**拿不到也用不上**的信息：
+       他听得到"第 2 个，共 6 个"，却没有任何办法走到第 3 个。
+       现在只说他能实际改动的两件事：用的是哪个声音、语速多少。 */
+    msg = '正在使用：' + shortVoiceName(zhVoice)
+        + '，语速 ' + speechPref.rate.toFixed(2);
+  }
+  el.textContent = msg;
+}
+
+/* 试听句刻意是完整的短句而不是"嘟"一声：
+   要听出"温柔不温柔、快慢合不合适"，必须有正常的语调起伏和停顿。
+   这句同时也是真实场景里的口气 —— 用户听到的就是以后每天听到的。 */
+const VOICE_TRIAL = '你好，我是启明随行。这样听起来舒服吗？';
+
+function bindVoiceSettings(){
+  const nudgeRate = (delta)=>{
+    const next = Math.round((speechPref.rate + delta) * 100) / 100;
+    if(next < 0.75 || next > 1.35){
+      haptic(HAPTIC_ERR);
+      speak(delta < 0 ? '已经是最慢的了' : '已经是最快的了', false);
+      return;
+    }
+    speechPref.rate = next;
+    saveSpeechPref();
+    haptic(HAPTIC_TAP);
+    refreshSpkInfo();
+    /* 试听句里直接带上数字：用户下次想知道"现在多快"时，
+       摸到这个按钮就能听到，不必去别处找。 */
+    speak('现在是 ' + next.toFixed(2) + ' 倍速。' + VOICE_TRIAL, false);
+  };
+
+  bindAccessible($('#btnSlower'),    '说得慢一点', ()=> nudgeRate(-0.05));
+  bindAccessible($('#btnFaster'),    '说得快一点', ()=> nudgeRate(+0.05));
+  refreshSpkInfo();
+  /* voiceschanged 可能在 bindVoiceSettings 之后才到（Android 上必然如此），
+     到了要刷新一次显示，否则"正在使用"永远是初始那行字。 */
+  if(TTS_OK){
+    const prev = speechSynthesis.onvoiceschanged;
+    try{
+      speechSynthesis.onvoiceschanged = ()=>{ try{ if(prev) prev(); }catch(e){} refreshSpkInfo(); };
+    }catch(e){}
+  }
+}
+bindVoiceSettings();
+
+/* ================================================================
+   底栏实测高度 → CSS 变量 --dock-h
+
+   底栏是 fixed 的，它的高度决定两件事：
+     ① 页面底部要留多少白（否则最后一排按钮被它永久压住）；
+     ② 跟屏区最多能长多高（否则结果的下半截正好被它遮住 —— 真机实测
+        就是这样：正文只露出一行，其余全在底栏后面）。
+   两处都读同一个变量，就不会各改各的、悄悄跑偏。
+   **实测而不是写死**：系统字号、安全区（刘海 / 手势条）、将来再加一个键，
+   都会让这个数字变，而写死的数字不会 —— 它只会安静地错下去。
+   ================================================================ */
+function syncDockH(){
+  const d = document.getElementById('dock');
+  if(!d) return;
+  const h = Math.round(d.getBoundingClientRect().height);
+  if(h > 0) document.documentElement.style.setProperty('--dock-h', h + 'px');
+}
+syncDockH();
+window.addEventListener('resize', syncDockH);
+window.addEventListener('orientationchange', syncDockH);
+/* 字体加载完底栏可能变高（字体回退在移动端很常见），再量一次。 */
+if(document.fonts && document.fonts.ready){
+  try{ document.fonts.ready.then(syncDockH).catch(()=>{}); }catch(e){}
+}
+
+/* 这里原本有一次 applyNavOrder()：给每个可导航项写一个 order 号。
+   现在顺序直接取自 DOM（见 navigableTargets / domOrder），
+   所以不需要在启动时预计算任何东西 —— 新增按钮自动排在它该在的位置。 */
+
+/* 摄像头不再在页面加载时就打开 —— 改到闸门触摸后申请，
+   既蹭到了用户手势，也避免"页面一进来就黑屏开摄像头"的突兀感。 */
+
+/* ================================================================
+   演示模式探测（防"看起来正常"的静默降级）
+
+   背景：后端只要没有视觉模型 Key（未建 .env / ZHIPU_API_KEY 为空），
+   所有"识别"都会返回系统内置示例，接口不报错、状态码 200、耗时也正常。
+   结果是"拍照读文字"返回一段"这是室内走廊"的场景示例，
+   用户完全没有线索知道问题出在"没有 Key"，只能到处怀疑功能写错了。
+
+   这里主动问一次 /api/meta，把 mock 状态变成界面上一条明确的横幅。
+   mock_mode 的语义已在后端修正为"实际是否 mock"——之前它直读环境变量，
+   缺 Key 时会谎报 false。
+   ================================================================ */
+let DEMO_MODE = false;
+
+/* 横幅要同时回答两个问题：为什么是示例 + 怎么才能用上真模型。
+   只写"原因"的话用户仍然不知道下一步该干什么——
+   这正是用户实测时反馈的："我怎么样才能用真实的模型"。 */
+const DEMO_HOWTO = '在电脑上运行 code/backend/check_model.cmd（或 python check_model.py --set-key），'
+                 + '按提示填入免费 API Key 后重启服务。';
+
+function showDemoBar(reason){
+  DEMO_MODE = true;
+  const bar = $('#demoBar');
+  if(!bar) return;
+  bar.style.display = 'block';
+  bar.innerHTML = '<b>演示模式：以下内容是系统内置示例，不是真实识别结果</b>'
+                + '<span>原因：' + esc(reason || '未接入识别模型') + '</span>'
+                + '<span>解决：' + esc(DEMO_HOWTO) + '</span>';
+  /* 全盲用户也必须有途径知道这件事：横幅进触摸探索，摸到就念完整说明。 */
+  bindAccessible(bar,
+    '演示模式提示。当前未接入识别模型，屏幕上的内容是系统内置示例，不是真实识别结果。'
+    + '原因：' + (reason || '未接入识别模型') + '。解决：' + DEMO_HOWTO, ()=>{}, {nav:false});
+}
+
+(async function detectDemoMode(){
+  try{
+    const r = await fetch(API + '/api/meta');
+    const j = await r.json();
+    const m = (j && j.models) || {};
+    if(m.mock_mode === true) showDemoBar(m.mock_reason);
+  }catch(e){
+    /* 拿不到就当真实模式：探测失败不该给用户制造恐慌 */
+  }
+})();
+</script>
+</body>
+</html>

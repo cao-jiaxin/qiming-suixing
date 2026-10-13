@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- 刻意不写 user-scalable=no：禁止缩放对低视力用户是硬伤，
+     WCAG 1.4.4 与 GB/T 37668-2019 的「可操作性」都要求页面可放大。 -->
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5">
+<title>语音自检 · 启明随行</title>
+<!-- 这一页是**排查工具**，不是作品门面：它会把浏览器标识、
+     系统语音清单这类诊断信息摊在屏幕上。被搜索引擎收录没有意义，
+     还可能被当成"作品里的一个调试页"。 -->
+<meta name="robots" content="noindex">
+<meta name="description" content="启明随行 · 语音自检页：逐条检验这台手机的语音播报能力，并给出一份可复制的诊断信息。">
+<style>
+  /* 配色与主页面同一套设计令牌（盲道黄主操作色 + 冷灰白底），
+     自检页是主应用的延伸，不该长得像另一个产品。
+     改这里之前先改主页面，两边必须一致。 */
+  :root{
+    --bg:#F2F4F3; --card:#FFFFFF; --line:#D5DCDD;
+    --tx:#10161C; --tx2:#3F4A53; --tx3:#5E6A73;
+    --accent:#F2C230; --accent-dark:#DBAE1C; --accent-ink:#151A1E;
+    --warn:#B23F26; --warn-bg:#FBE7E2; --warn-ink:#8A2F1C;
+    --ring:#0E6B57;
+    --tint:#E4EFE8; --tint-line:#CBDDD3; --tint-ink:#2F4A3C;
+    --num:ui-monospace,"SF Mono","Cascadia Mono",Consolas,"PingFang SC",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{
+    background:var(--bg);color:var(--tx);
+    font-family:"PingFang SC","Microsoft YaHei","HarmonyOS Sans SC","Noto Sans CJK SC",system-ui,sans-serif;
+    font-size:16px;line-height:1.75;padding:16px 16px 40px;max-width:560px;margin:0 auto;
+  }
+  header{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
+  h1{font-size:22px;font-weight:700;letter-spacing:-.3px}
+  header span{font-size:12.5px;color:var(--tx3)}
+  h2{font-size:17px;font-weight:700;margin:26px 0 8px}
+  .hint{font-size:14px;color:var(--tx3);margin-bottom:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0}
+  /* 结论区：整页最重要的信息，大字 + 左侧粗色条。
+     颜色只做辅助，结论本身是文字 —— 色觉障碍用户也要能读。 */
+  #verdict{
+    background:var(--card);border:1px solid var(--line);border-left:4px solid var(--ring);
+    border-radius:14px;padding:16px;margin:14px 0;font-size:19px;line-height:1.8;font-weight:500;
+  }
+  #verdict.bad{border-left-color:var(--warn);color:var(--warn-ink)}
+  #verdict.ok{border-left-color:var(--ring)}
+  #verdict b{display:block;margin-bottom:4px}
+  .btn{
+    display:block;width:100%;min-height:72px;border:none;border-radius:14px;
+    background:var(--accent);color:var(--accent-ink);font-size:19px;font-weight:700;
+    margin:14px 0;cursor:pointer;touch-action:manipulation;
+    transition:background .12s ease,transform .12s ease;
+    font-family:inherit;line-height:1.4;padding:14px;
+  }
+  .btn:active{background:var(--accent-dark);transform:translateY(1px)}
+  .btn.sec{background:var(--card);color:var(--tx2);border:1.5px solid var(--line)}
+  .btn.sec:active{background:#EFF2F1}
+  .btn[disabled]{opacity:.5}
+  .ask{background:var(--tint);border:1px solid var(--tint-line);border-radius:14px;padding:14px;margin:12px 0}
+  .ask p{font-size:17px;font-weight:600;color:var(--tint-ink)}
+  .row{display:flex;gap:14px;margin-top:10px}
+  .row .btn{margin:0}
+  .facts{font-size:14px;line-height:1.9;color:var(--tx2)}
+  .facts dt{font-weight:700;color:var(--tx)}
+  .facts dd{margin:0 0 6px;word-break:break-all}
+  #copybox{
+    font-family:var(--num);font-size:12.5px;line-height:1.75;white-space:pre-wrap;
+    word-break:break-all;background:var(--tint);border:1px solid var(--tint-line);
+    border-radius:12px;padding:12px;color:var(--tint-ink);margin-top:8px;
+  }
+  .tag{display:inline-block;background:var(--tint);color:var(--tint-ink);
+       border-radius:7px;padding:3px 10px;font-size:13px;font-weight:600}
+  .tag.no{background:var(--warn-bg);color:var(--warn-ink)}
+  /* 尊重系统"减少动态效果"：前庭功能障碍用户会因动效眩晕 */
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important}
+  }
+  /* 深色主题：视网膜色素变性等眼病常伴随畏光，接系统偏好是本分。
+     只翻底色与文字，不动 --accent / --warn（语义色随主题漂移会让动作记忆失效）。 */
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#11171B; --card:#19222A; --line:#2B363E;
+      --tx:#E9EEEF; --tx2:#BFC9CC; --tx3:#A6B1B6;
+      --ring:#5FD3A6;
+      --tint:#1E2C2A; --tint-line:#31443F; --tint-ink:#A8D6C4;
+      --warn-bg:#2E1F1B; --warn-ink:#F0A08A;
+    }
+    .btn.sec:active{background:#212C34}
+  }
+</style>
+</head>
+<body>
+
+<header><h1>语音自检</h1><span>启明随行</span></header>
+<p class="hint">
+  哪台手机听不到声音，就用哪台手机打开这一页。它会先把这台设备的环境读出来，
+  再让你亲手试两次。测完把最下面的那一段发给开发者就行 —— 不用你自己判断哪里出了问题。
+</p>
+
+<!-- 结论区用 aria-live：全盲用户开着读屏打开这一页时，
+     结论一出来就该被念出来，不能等着他自己去摸。 -->
+<div id="verdict" role="status" aria-live="polite">还没有开始。请先点下面那个黄色按钮，试一声提示音。</div>
+
+<button class="btn" id="btnTone">① 试一声提示音<br><span style="font-size:14px;font-weight:500">这条不走语音引擎，只检验音量和扬声器</span></button>
+
+<div class="ask" id="askTone" hidden>
+  <p>刚才那声「嘀」你听到了吗？</p>
+  <div class="row">
+    <button class="btn sec" data-answer="tone:yes">听到了</button>
+    <button class="btn sec" data-answer="tone:no">没听到</button>
+  </div>
+</div>
+
+<button class="btn" id="btnTts">② 试一句中文播报<br><span style="font-size:14px;font-weight:500">这条要用系统里的语音引擎</span></button>
+
+<div class="ask" id="askTts" hidden>
+  <p>刚才那句中文你听清了吗？</p>
+  <div class="row">
+    <button class="btn sec" data-answer="tts:yes">听清了</button>
+    <button class="btn sec" data-answer="tts:no">没听到</button>
+  </div>
+</div>
+
+<h2>这台设备的环境</h2>
+<div class="card facts" id="facts">正在读取……</div>
+
+<h2>把这段发给开发者</h2>
+<p class="hint" style="margin-bottom:6px">不用抄，截图或者长按复制都可以。里面没有任何隐私信息。</p>
+<pre id="copybox">正在生成……</pre>
+<button class="btn sec" id="btnCopy" style="min-height:56px;font-size:17px">复制这段信息</button>
+
+<h2>这三种结果分别意味着什么</h2>
+<div class="card facts">
+  <dl>
+    <dt>提示音和中文都听得到</dt>
+    <dd>这台手机的语音是好的。那问题多半在主页面：回到主页面后，<strong>要先用手指点一下屏幕</strong>（启动闸门），页面才会有声音。</dd>
+
+    <dt>提示音听得到，中文听不到</dt>
+    <dd>音量和扬声器没问题，缺的是<strong>系统里的中文语音</strong>。做法：设置 → 无障碍 → 文字转语音，确认已安装语音引擎、语言选中文；装不上就换 Chrome 或 Safari 打开。</dd>
+
+    <dt>两个都听不到</dt>
+    <dd>先别怀疑软件：① 按侧面音量键把<strong>媒体音量</strong>调起来（不是铃声音量）；② 关掉静音和勿扰；③ <strong>断开蓝牙耳机</strong>——连着耳机时声音会走到耳机里，自己听不到。</dd>
+  </dl>
+</div>
+
+<script>
+/* ================================================================
+   为什么要有这一页
+
+   主页面只能告诉用户"我没出声了"，但它**没有能力判断为什么**：
+   是音量、是静音、是没装中文语音、还是浏览器根本没有这个接口，
+   四种原因的解决办法完全不同，而在手机上开发者看不见用户的环境。
+
+   这一页就是把这件事变成可测量的：
+   ① 一声提示音走 Web Audio，**完全绕开语音引擎** —— 它响不响，
+      唯一取决于音量和扬声器；
+   ② 一句中文走 speechSynthesis —— 它响不响，取决于语音引擎和中文语音包。
+   两个结果一对比，"音量问题"和"引擎问题"当场就分开了。
+
+   至于"用户到底有没有听到"，只有用户自己知道，所以每次试验之后
+   都要问一次，而不是替他判断 —— 机器能测的是"发出了"，不是"听见了"。
+   ================================================================ */
+const $ = (s) => document.querySelector(s);
+const TTS_TEXT = '你好，这是语音测试，能听到就说明正常。';
+
+const S = {
+  hasSynth: ('speechSynthesis' in window) && ('SpeechSynthesisUtterance' in window),
+  hasTone : !!(window.AudioContext || window.webkitAudioContext),
+  voices  : [],           // 系统报告的可用语音
+  voiceRead: 0,           // 读了几次（语音列表是异步加载的）
+  ttsStarted: null,       // 引擎有没有给过 onstart
+  ttsErr : '',            // 引擎报的错误码
+  tone   : null,          // 'yes' / 'no'：用户自报
+  tts    : null,
+};
+const log = [];
+
+/* 屏幕上的结论 + 可复制的那段文字，永远同时生成，
+   两者内容必须一致 —— 只改一处会出现"屏幕说 A、发给开发者的说 B"。 */
+function setVerdict(tone, title, body){
+  const el = $('#verdict');
+  el.className = tone;                 // '' / 'ok' / 'bad'
+  el.innerHTML = title ? '<b>' + title + '</b>' + body : body;
+  syncCopybox();
+}
+function note(line){ log.push(line); }
+
+function voiceNames(){
+  if(!S.voices.length) return '（一个都没有）';
+  return S.voices.map(v => (v.name || '未命名') + ' [' + (v.lang || '?') + ']').join('、');
+}
+function zhCount(){ return S.voices.filter(v => /^(zh|cmn|yue)/i.test(v.lang || '')).length; }
+
+function readVoices(){
+  if(!S.hasSynth) return;
+  try{
+    const v = speechSynthesis.getVoices() || [];
+    if(v.length) S.voices = v;
+  }catch(e){}
+  renderFacts();
+}
+if(S.hasSynth){
+  readVoices();
+  /* Android 的 getVoices() 是惰性异步的，首次必然返回空数组，
+     必须监听 voiceschanged 再重读 —— 只看第一次会误判成"没装语音"。 */
+  try{ speechSynthesis.onvoiceschanged = readVoices; }catch(e){}
+  setTimeout(readVoices, 400);
+  setTimeout(readVoices, 1600);
+  setTimeout(readVoices, 3500);
+}
+
+/* 转义。这里拼进 innerHTML 的内容里，**浏览器标识与系统语音名都是外部输入**
+   （UA 由浏览器给，语音名由系统 TTS 引擎给），虽然被利用的概率极低，
+   但"文本进 innerHTML 前先转义"没有例外可讲 —— 一旦开了先例，
+   下一个人就会照着这个先例写。 */
+function esc(s){
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* 主页面跳过来时会带 ?err=<错误码>（见 index.html 的 voiceCheckUrl）。
+   有它就能省掉"用户复述引擎刚才报了什么"这一轮 —— 而视障用户复述
+   一串英文错误码本来就不现实。 */
+const URL_ERR = new URLSearchParams(location.search).get('err') || '';
+
+function renderFacts(){
+  const ua = navigator.userAgent || '';
+  const rows = [
+    ['网页语音接口 speechSynthesis', S.hasSynth ? '有' : '没有'],
+    ['音频播放接口 AudioContext',   S.hasTone  ? '有' : '没有'],
+    ['安全连接（https）',           window.isSecureContext ? '是' : '否'],
+    ['系统报告的语音数量',          S.voices.length + ' 个'],
+    ['其中中文语音',                zhCount() + ' 个'],
+    ['可用语音清单',                voiceNames()],
+  ];
+  if(URL_ERR) rows.push(['主页面报的错误码', URL_ERR]);
+  rows.push(['浏览器标识', ua]);
+  $('#facts').innerHTML = rows
+    .map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>').join('');
+  syncCopybox();
+}
+
+function syncCopybox(){
+  const box = $('#copybox');
+  if(!box) return;
+  box.textContent =
+      '【启明随行 · 语音自检】'
+    + '\n时间：' + new Date().toLocaleString('zh-CN')
+    + '\n网页语音接口 speechSynthesis：' + (S.hasSynth ? '有' : '没有')
+    + '\n音频播放接口 AudioContext：'   + (S.hasTone ? '有' : '没有')
+    + '\n安全连接 https：'             + (window.isSecureContext ? '是' : '否')
+    + '\n系统报告语音数量：'           + S.voices.length + ' 个（其中中文 ' + zhCount() + ' 个）'
+    + '\n可用语音清单：'               + voiceNames()
+    + '\n引擎是否给出"开始播报"事件：' + (S.ttsStarted === null ? '未测' : (S.ttsStarted ? '给了' : '没给'))
+    + '\n引擎报错码：'                 + (URL_ERR || S.ttsErr || '无')
+    + '\n提示音：'                     + (S.tone === null ? '未测' : (S.tone === 'yes' ? '听到了' : '没听到'))
+    + '\n中文播报：'                   + (S.tts  === null ? '未测' : (S.tts  === 'yes' ? '听到了' : '没听到'))
+    + '\n浏览器：'                     + (navigator.userAgent || '');
+}
+
+/* ---------- ① 提示音：完全绕开语音引擎 ---------- */
+function playTone(){
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if(!AC) return false;
+  try{
+    const ac = new AC();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'sine';
+    o.frequency.value = 660;                 // 660Hz：中频，普通扬声器最容易发出来
+    o.connect(g); g.connect(ac.destination);
+    const t0 = ac.currentTime;
+    /* 起音加 60ms 渐变：直接给满音量会有一声"啪"的爆音，
+       用户会以为设备坏了。 */
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.30, t0 + 0.06);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.95);
+    o.start(t0); o.stop(t0 + 1.0);
+    /* iOS / 新版 Chrome 的 AudioContext 初始是 suspended，
+       必须在用户手势里 resume() —— 这一次调用正好在按钮的点击任务里。 */
+    if(ac.state === 'suspended'){ try{ ac.resume(); }catch(e){} }
+    setTimeout(()=>{ try{ ac.close(); }catch(e){} }, 1400);
+    return true;
+  }catch(e){ note('提示音播放失败：' + e.message); return false; }
+}
+
+$('#btnTone').addEventListener('click', ()=>{
+  navigator.vibrate && navigator.vibrate(12);
+  if(!playTone()){
+    setVerdict('bad', '这台浏览器放不了提示音', '它连音频播放接口都没有，这一项测不出来，请直接做第 ② 项。');
+    return;
+  }
+  setVerdict('', '', '提示音已经放出来了（一声「嘀」）。请回答下面的问题。');
+  $('#askTone').hidden = false;
+  $('#askTone').scrollIntoView({block:'center'});
+});
+
+/* ---------- ② 中文播报：走系统语音引擎 ---------- */
+$('#btnTts').addEventListener('click', ()=>{
+  navigator.vibrate && navigator.vibrate(12);
+  if(!S.hasSynth){
+    S.ttsStarted = false;
+    /* 这里必须直接把这一项判成"听不到"：
+       否则用户回答完提示音那一项，conclude() 会因为 tts 仍是 null
+       而报"还差一项没测"，把上面这条正确的结论覆盖掉。 */
+    S.tts = 'no';
+    setVerdict('bad', '这个浏览器没有语音播报接口',
+      '它的 speechSynthesis 不存在，和音量、语音包都无关 —— 换浏览器或换设备才有用。'
+      + '建议用 Chrome / Safari / Edge 打开，或者打开手机自带的读屏（安卓 TalkBack、iPhone VoiceOver）。'
+      + '微信里点开的链接，请先选「在浏览器中打开」。');
+    syncCopybox();
+    return;
+  }
+  let started = false;
+  try{
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(TTS_TEXT);
+    u.lang = 'zh-CN'; u.rate = 0.95; u.pitch = 1.04; u.volume = 1;
+    const zh = (speechSynthesis.getVoices() || []).filter(v => /^(zh|cmn|yue)/i.test(v.lang || ''))[0];
+    if(zh){ u.voice = zh; u.lang = zh.lang; }
+    u.onstart = ()=>{ started = true; S.ttsStarted = true; syncCopybox(); };
+    u.onerror = (e)=>{ S.ttsErr = (e && e.error) || 'unknown'; syncCopybox(); };
+    speechSynthesis.speak(u);
+    /* 4 秒还没 onstart，基本可以断定引擎没在干活。
+       注意"没给事件"≠"没出声"：少数内核实现不发这个事件，
+       所以它只作为**旁证**，最终判断仍以用户听到没有为准。 */
+    setTimeout(()=>{ if(!started && S.ttsStarted !== true){ S.ttsStarted = false; syncCopybox(); } }, 4000);
+  }catch(e){
+    S.ttsErr = 'exception:' + e.message;
+    setVerdict('bad', '调用播报时直接出错了', '系统语音接口抛了异常。请把下面的信息发给开发者。');
+    syncCopybox();
+    return;
+  }
+  setVerdict('', '', '中文播报已经发出去了。请回答下面的问题 —— 这是整页最关键的答案。');
+  $('#askTts').hidden = false;
+  $('#askTts').scrollIntoView({block:'center'});
+});
+
+/* ---------- 用户自报"听到了没有"，再合成结论 ---------- */
+document.querySelectorAll('[data-answer]').forEach(btn => {
+  btn.addEventListener('click', ()=>{
+    const [k, v] = btn.getAttribute('data-answer').split(':');
+    S[k] = v;
+    navigator.vibrate && navigator.vibrate(20);
+    if(k === 'tone') $('#askTone').hidden = true;
+    if(k === 'tts')  $('#askTts').hidden  = true;
+    conclude();
+  });
+});
+
+function conclude(){
+  if(S.tone === null || S.tts === null){
+    setVerdict('', '', '还差一项没测。两项都做完，结论才会出来。');
+    return;
+  }
+  if(!S.hasSynth){
+    setVerdict('bad', '结论：浏览器不支持网页语音播报',
+      '这个浏览器没有 speechSynthesis 接口（提示音能不能听到都不影响这个结论）。'
+      + '这不是手机坏了，是浏览器缺能力 —— 换 Chrome / Safari / Edge，或者改用系统读屏。');
+    return;
+  }
+  if(S.tts === 'yes' && S.tone === 'yes'){
+    setVerdict('ok', '结论：这台手机的语音是好的',
+      '两项都听得到，说明音量和语音引擎都正常。那主页面没声音，最常见的原因是'
+      + '「还没有点过启动闸门」—— 回到主页面，先用手指点一下屏幕任意位置。'
+      + '如果点过还是没有声音，把下面的信息发给开发者。');
+    return;
+  }
+  if(S.tone === 'yes' && S.tts === 'no'){
+    setVerdict('bad', '结论：缺的是系统里的中文语音',
+      '提示音听得到 → 音量和扬声器没问题；中文播报听不到 → 问题在语音引擎。'
+      + (S.ttsStarted === false ? '而且引擎连「开始播报」的事件都没给，基本可以确定它没在工作。' : '')
+      + '<br>做法：① 设置 → 无障碍 → 文字转语音，确认装了语音引擎、语言选中文；'
+      + '② 装不上就换 Chrome 或 Safari 打开。');
+    return;
+  }
+  if(S.tts === 'yes' && S.tone === 'no'){
+    /* 两个答案互相矛盾时以"中文播报听到了"为准：
+       提示音的响度远低于语音，听不到很可能只是那一声太轻，
+       而语音能出声才是这一页真正要验证的事。 */
+    setVerdict('ok', '结论：这台手机的语音是好的',
+      '中文播报能听到，说明语音引擎正常工作（提示音没听到，多半只是那一声太轻）。'
+      + '那主页面没声音，先确认回到主页面后<strong>用手指点过屏幕</strong>。');
+    return;
+  }
+  setVerdict('bad', '结论：这台设备现在放不出声音',
+    '两个测试都没听到，先按这个顺序试 —— 这三条能解决绝大多数情况：'
+    + '<br>① 按手机侧面的音量键，把<strong>媒体音量</strong>调起来（不是铃声音量）；'
+    + '<br>② 关掉静音和勿扰模式；'
+    + '<br>③ 断开蓝牙耳机 —— 连着耳机时声音会走进耳机，自己当然听不到。'
+    + (S.voices.length === 0 ? '<br>另外，系统报告这台设备「一个语音都没有」，也需要按上面的第 ① 条去装中文语音。' : ''));
+}
+
+/* 复制：安全连接下走剪贴板接口，否则退化成"选中全文"，
+   让用户自己长按复制 —— 不能因为接口没有就什么都不做。 */
+$('#btnCopy').addEventListener('click', async ()=>{
+  const text = $('#copybox').textContent;
+  try{
+    await navigator.clipboard.writeText(text);
+    $('#btnCopy').textContent = '已复制，可以发给开发者了';
+  }catch(e){
+    const r = document.createRange();
+    r.selectNodeContents($('#copybox'));
+    const s = window.getSelection();
+    s.removeAllRanges(); s.addRange(r);
+    $('#btnCopy').textContent = '已全选，请长按选择「复制」';
+  }
+  setTimeout(()=>{ $('#btnCopy').textContent = '复制这段信息'; }, 4000);
+});
+
+renderFacts();
+</script>
+</body>
+</html>

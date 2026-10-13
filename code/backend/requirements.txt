@@ -1,0 +1,33 @@
+# 「启明随行」后端依赖
+#
+# 安装：pip install -r requirements.txt
+# 说明：基础依赖装完即可在 MOCK_MODE 下端到端跑通全部功能；
+#       标注"可选"的依赖按需安装，缺失时对应模块自动降级，不会导致服务起不来。
+
+# ---------------- 基础依赖（必装） ----------------
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-dotenv==1.0.1
+requests==2.32.3
+Pillow==11.0.0
+python-multipart==0.0.20
+# numpy 不能钉 1.26.x：1.26.x 官方只提供到 cp312 的轮子，
+# 在 Python 3.13 上会直接 "No matching distribution found"（实测）。
+# 本项目只用 np.asarray / np.percentile / np.argmin 等基础 API，2.x 全部兼容。
+numpy>=2.1                 # F03 距离估计（几何启发式后端必需）
+
+# httpx 是 fastapi.testclient 的依赖，跑 smoke_test.py 需要
+httpx==0.28.1
+
+# ---------------- 可选：深度估计 ONNX 后端（F03 生产路径，强烈建议装） ----------------
+# 装完把 depth_anything_v2_small.onnx 放到 code/backend/models/ 即自动启用，
+# 未安装时自动退化为几何启发式后端（功能可用，精度较粗）
+# onnxruntime==1.20.1
+
+# ---------------- 可选：OCR 中文小字识别（F06/F07） ----------------
+# paddleocr==3.0.0
+# paddlepaddle==3.0.0
+
+# ---------------- 可选：语音识别 / 合成（F05/F08） ----------------
+# funasr==1.1.14
+# torch>=2.0
